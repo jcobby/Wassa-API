@@ -4,11 +4,19 @@ import { ContactInput } from "../utils/validation.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/requireAdmin.js";
 import { HttpError } from "../middleware/error.js";
+import { rateLimit } from "../middleware/rateLimit.js";
 
 export const messagesRouter = Router();
 
+const contactLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message:
+    "Too many messages sent from this network. Please try again later.",
+});
+
 // Public: submit contact message
-messagesRouter.post("/", async (req, res, next) => {
+messagesRouter.post("/", contactLimiter, async (req, res, next) => {
   try {
     const input = ContactInput.parse(req.body);
     const msg = await ContactMessageModel.create(input);

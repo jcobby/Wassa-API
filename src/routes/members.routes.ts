@@ -1,10 +1,21 @@
 import { Router } from "express";
+import crypto from "node:crypto";
 import { MemberModel } from "../models/Member.js";
+import { getOrCreateSettings } from "../models/Settings.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/requireAdmin.js";
 import { HttpError } from "../middleware/error.js";
+import { sendEmail } from "../email/client.js";
+import { approvalEmail } from "../email/templates/approval.js";
+import { welcomeEmail } from "../email/templates/welcome.js";
+import { rateLimit } from "../middleware/rateLimit.js";
+import { config } from "../config.js";
+
+const TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 
 export const membersRouter = Router();
+
+const resendLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 });
 
 // Auth: current user's own profile
 membersRouter.get("/me", requireAuth, async (req, res, next) => {
@@ -84,10 +95,93 @@ membersRouter.get(
   async (req, res, next) => {
     try {
       const m = await MemberModel.findById(req.params.id).select(
-        "-passwordHash -setPasswordToken -tokenExpiresAt"
+        "-setPasswordToken -tokenExpiresAt"
       );
       if (!m) throw new HttpError(404, "Member not found");
-      res.json(m);
+      // Expose whether a password is set (so the admin UI can offer a resend)
+      // without ever leaking the hash itself.
+      const obj = m.toObject() as Record<string, unknown>;
+      const hasPassword = Boolean(obj.passwordHash);
+      delete obj.passwordHash;
+      res.json({ ...obj, hasPassword });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Admin: re-send the onboarding email a member is currently waiting on.
+// Picks the right email from the member's state:
+//   pending_payment      → approval email with the payment link
+//   active, no password  → welcome email with the set-password link
+membersRouter.post(
+  "/:id/resend-email",
+  resendLimiter,
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const m = await MemberModel.findById(req.params.id);
+      if (!m) throw new HttpError(404, "Member not found");
+
+      const now = Date.now();
+
+      if (m.status === "pending_payment") {
+        let token = m.accessToken ?? "";
+        let expires = m.accessTokenExpiresAt ?? null;
+        if (!token || !expires || expires.getTime() < now) {
+          token = crypto.randomBytes(32).toString("hex");
+          expires = new Date(now + TOKEN_TTL_MS);
+          m.accessToken = token;
+          m.accessTokenExpiresAt = expires;
+          await m.save();
+        }
+        const settings = await getOrCreateSettings();
+        const tpl = approvalEmail({
+          fullName: m.fullName,
+          paymentUrl: `${config.publicBaseUrl}/membership/payment/${token}`,
+          amount: settings.membershipFee.amount,
+          currency: settings.membershipFee.currency,
+          expiresAt: expires,
+        });
+        await sendEmail({
+          to: m.email,
+          subject: tpl.subject,
+          html: tpl.html,
+          text: tpl.text,
+        });
+        return res.json({ ok: true, kind: "payment", email: m.email });
+      }
+
+      if (m.status === "active" && !m.passwordHash) {
+        let token = m.setPasswordToken ?? "";
+        let expires = m.tokenExpiresAt ?? null;
+        if (!token || !expires || expires.getTime() < now) {
+          token = crypto.randomBytes(32).toString("hex");
+          expires = new Date(now + TOKEN_TTL_MS);
+          m.setPasswordToken = token;
+          m.tokenExpiresAt = expires;
+          await m.save();
+        }
+        const tpl = welcomeEmail({
+          fullName: m.fullName,
+          email: m.email,
+          setPasswordUrl: `${config.publicBaseUrl}/set-password/${token}`,
+          expiresAt: expires,
+        });
+        await sendEmail({
+          to: m.email,
+          subject: tpl.subject,
+          html: tpl.html,
+          text: tpl.text,
+        });
+        return res.json({ ok: true, kind: "set_password", email: m.email });
+      }
+
+      throw new HttpError(
+        400,
+        "This member has already set their password — there's no onboarding email to resend."
+      );
     } catch (err) {
       next(err);
     }

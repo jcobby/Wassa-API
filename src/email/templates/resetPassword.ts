@@ -2,16 +2,17 @@ import { config } from "../../config.js";
 
 type Args = {
   fullName: string;
-  email: string;
-  setPasswordUrl: string;
+  resetUrl: string;
   expiresAt: Date;
 };
 
-export function welcomeEmail({ fullName, email, setPasswordUrl, expiresAt }: Args) {
-  const expiry = expiresAt.toLocaleDateString("en-GB", {
+export function resetPasswordEmail({ fullName, resetUrl, expiresAt }: Args) {
+  const expiry = expiresAt.toLocaleString("en-GB", {
     day: "2-digit",
     month: "long",
     year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 
   const html = `
@@ -25,29 +26,19 @@ export function welcomeEmail({ fullName, email, setPasswordUrl, expiresAt }: Arg
             <tr>
               <td style="background:#0d2818;padding:32px 40px;color:#f6f4ee;">
                 <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#c8a04c;">Wassa Professionals Network</div>
-                <h1 style="margin:8px 0 0;font-size:24px;font-weight:600;">Welcome to WPN</h1>
+                <h1 style="margin:8px 0 0;font-size:24px;font-weight:600;">Reset your password</h1>
               </td>
             </tr>
             <tr>
               <td style="padding:32px 40px;">
                 <p style="margin:0 0 16px;font-size:16px;line-height:1.6;">Dear ${escape(fullName)},</p>
                 <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#3a4a40;">
-                  Thank you for completing your membership payment &mdash; your member account is now active. One last step: choose a password to secure your account.
+                  We received a request to reset the password for your WPN member account. Click the button below to choose a new password.
                 </p>
-
-                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:24px 0;background:#f6f4ee;border-radius:12px;">
-                  <tr>
-                    <td style="padding:20px 24px;">
-                      <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#6a7a70;">Your sign-in email</div>
-                      <div style="margin-top:4px;font-size:15px;font-family:monospace;color:#0d2818;">${escape(email)}</div>
-                    </td>
-                  </tr>
-                </table>
-
                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
                   <tr>
                     <td align="center">
-                      <a href="${setPasswordUrl}" style="display:inline-block;background:#c8a04c;color:#0d2818;font-weight:600;font-size:15px;padding:14px 32px;border-radius:999px;text-decoration:none;">Set Your Password</a>
+                      <a href="${resetUrl}" style="display:inline-block;background:#c8a04c;color:#0d2818;font-weight:600;font-size:15px;padding:14px 32px;border-radius:999px;text-decoration:none;">Reset Password</a>
                     </td>
                   </tr>
                 </table>
@@ -55,10 +46,10 @@ export function welcomeEmail({ fullName, email, setPasswordUrl, expiresAt }: Arg
                   Or copy this link into your browser:
                 </p>
                 <p style="margin:0 0 24px;font-size:12px;color:#3a4a40;word-break:break-all;">
-                  ${setPasswordUrl}
+                  ${resetUrl}
                 </p>
                 <p style="margin:0;font-size:13px;color:#6a7a70;">
-                  This link is valid until <strong>${expiry}</strong>. If it expires before you set your password, contact the General Secretary.
+                  This link is valid until <strong>${expiry}</strong>. If you didn't request this, you can safely ignore this email — your password won't change.
                 </p>
               </td>
             </tr>
@@ -75,23 +66,20 @@ export function welcomeEmail({ fullName, email, setPasswordUrl, expiresAt }: Arg
 </html>`;
 
   const text = `WASSA PROFESSIONALS NETWORK
-Welcome to WPN
+Reset your password
 
 Dear ${fullName},
 
-Thank you for completing your membership payment. Your member account is now active.
+We received a request to reset the password for your WPN member account. Choose a new password here:
 
-One last step — choose a password to secure your account:
-${setPasswordUrl}
+${resetUrl}
 
-Your sign-in email is: ${email}
-
-This link is valid until ${expiry}.
+This link is valid until ${expiry}. If you didn't request this, you can safely ignore this email — your password won't change.
 
 — The Wassa Professionals Network`;
 
   return {
-    subject: "Welcome to WPN — set your password",
+    subject: "Reset your WPN password",
     html,
     text,
   };
@@ -105,5 +93,4 @@ function escape(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-// Keep config import used (avoid TS unused warning if needed later)
 void config;

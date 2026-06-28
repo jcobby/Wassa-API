@@ -1,16 +1,25 @@
-import { Resend } from "resend";
+import nodemailer, { type Transporter } from "nodemailer";
 import { config } from "../config.js";
 
-let resend: Resend | null = null;
+let transporter: Transporter | null = null;
 
-function client(): Resend {
-  if (!config.resendApiKey) {
+function getTransporter(): Transporter {
+  if (!config.smtpUser || !config.smtpPass) {
     throw new Error(
-      "RESEND_API_KEY is not set — cannot send email. Add it to .env."
+      "SMTP_USER / SMTP_PASS are not set — cannot send email. Add your Zoho " +
+        "account and an app-specific password to .env."
     );
   }
-  if (!resend) resend = new Resend(config.resendApiKey);
-  return resend;
+  if (!transporter) {
+    transporter = nodemailer.createTransport({
+      host: config.smtpHost,
+      port: config.smtpPort,
+      // 465 = implicit TLS (SSL); 587 = STARTTLS.
+      secure: config.smtpPort === 465,
+      auth: { user: config.smtpUser, pass: config.smtpPass },
+    });
+  }
+  return transporter;
 }
 
 export type EmailInput = {
@@ -21,7 +30,7 @@ export type EmailInput = {
 };
 
 export async function sendEmail(input: EmailInput): Promise<void> {
-  const c = client();
+  const t = getTransporter();
   const override = config.testEmailOverride.trim();
   const to = override || input.to;
   // If we're overriding, tag the subject so we know who it was really for.
@@ -30,15 +39,17 @@ export async function sendEmail(input: EmailInput): Promise<void> {
       ? `[to: ${input.to}] ${input.subject}`
       : input.subject;
 
-  const { error } = await c.emails.send({
-    from: config.emailFrom,
-    to,
-    subject,
-    html: input.html,
-    text: input.text,
-  });
-  if (error) {
-    console.error("[email] send failed", error);
-    throw new Error(`Email send failed: ${error.message ?? "unknown"}`);
+  try {
+    await t.sendMail({
+      from: config.emailFrom,
+      to,
+      subject,
+      html: input.html,
+      text: input.text,
+    });
+  } catch (err) {
+    console.error("[email] send failed", err);
+    const message = err instanceof Error ? err.message : "unknown";
+    throw new Error(`Email send failed: ${message}`);
   }
 }

@@ -58,6 +58,16 @@ const ApplicationSchema = new Schema(
     // Section E
     nextOfKin: { type: NextOfKinSchema, required: true },
 
+    // Email ownership (double opt-in) — proves the applicant controls the
+    // address before we ever email them an approval/payment link.
+    emailVerified: { type: Boolean, default: false },
+    verifyToken: { type: String, default: null, index: true },
+    verifyTokenExpiresAt: { type: Date, default: null },
+    // Auto-cleanup: a TTL index purges the document once this date passes. Set
+    // on creation, then cleared (null) the moment the email is confirmed — so
+    // only never-confirmed applications are ever deleted.
+    cleanupAt: { type: Date, default: null },
+
     // Workflow
     status: {
       type: String,
@@ -72,6 +82,11 @@ const ApplicationSchema = new Schema(
   },
   { timestamps: true }
 );
+
+// TTL index: MongoDB deletes a document once `cleanupAt` is in the past.
+// Documents where cleanupAt is null/unset are never touched, so confirmed and
+// reviewed applications are kept permanently.
+ApplicationSchema.index({ cleanupAt: 1 }, { expireAfterSeconds: 0 });
 
 export type Application = InferSchemaType<typeof ApplicationSchema> & {
   _id: Types.ObjectId;

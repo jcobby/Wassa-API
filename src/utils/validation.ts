@@ -53,6 +53,14 @@ export const SetPasswordInput = z.object({
   password: z.string().min(8),
 });
 
+export const VerifyEmailInput = z.object({
+  token: z.string().min(10),
+});
+
+export const ForgotPasswordInput = z.object({
+  email: z.string().trim().toLowerCase().email(),
+});
+
 export const ContactInput = z.object({
   firstName: trimmed(),
   lastName: z.string().trim().optional().default(""),

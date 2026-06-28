@@ -1,11 +1,23 @@
 import { Schema, model, type InferSchemaType, type Types } from "mongoose";
 
+// A sub-schema (like NextOfKin) so InferSchemaType treats membershipFee as an
+// always-present object rather than possibly-undefined — callers read
+// `membershipFee.amount` directly without null checks.
+const MembershipFeeSchema = new Schema(
+  {
+    amount: { type: Number, required: true, default: 200 },
+    currency: { type: String, required: true, default: "GHS" },
+  },
+  { _id: false }
+);
+
 const SettingsSchema = new Schema(
   {
     key: { type: String, required: true, unique: true, default: "global" },
     membershipFee: {
-      amount: { type: Number, required: true, default: 200 },
-      currency: { type: String, required: true, default: "GHS" },
+      type: MembershipFeeSchema,
+      required: true,
+      default: () => ({}),
     },
     updatedBy: { type: Schema.Types.ObjectId, ref: "Member" },
   },

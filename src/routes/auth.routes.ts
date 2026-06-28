@@ -1,14 +1,61 @@
 import { Router } from "express";
+import crypto from "node:crypto";
 import { MemberModel } from "../models/Member.js";
-import { LoginInput, SetPasswordInput } from "../utils/validation.js";
+import {
+  LoginInput,
+  SetPasswordInput,
+  ForgotPasswordInput,
+} from "../utils/validation.js";
 import { hashPassword, verifyPassword } from "../utils/password.js";
 import { COOKIE_NAME, cookieOptions, signToken } from "../utils/jwt.js";
 import { HttpError } from "../middleware/error.js";
 import { requireAuth } from "../middleware/auth.js";
+import { sendEmail } from "../email/client.js";
+import { resetPasswordEmail } from "../email/templates/resetPassword.js";
+import { rateLimit, emailKey } from "../middleware/rateLimit.js";
+import { config } from "../config.js";
 
 export const authRouter = Router();
 
-authRouter.post("/login", async (req, res, next) => {
+const FIFTEEN_MIN = 15 * 60 * 1000;
+const ONE_HOUR = 60 * 60 * 1000;
+
+// Login: slow down brute force, per source IP and per targeted account.
+const loginIpLimiter = rateLimit({
+  windowMs: FIFTEEN_MIN,
+  max: 30,
+  message: "Too many sign-in attempts. Please wait a few minutes and try again.",
+});
+const loginEmailLimiter = rateLimit({
+  windowMs: FIFTEEN_MIN,
+  max: 10,
+  keyGenerator: emailKey,
+  message:
+    "Too many sign-in attempts for this account. Please wait a few minutes and try again.",
+});
+
+// Forgot-password: these trigger an email, so keep them tight — per IP, and
+// strictly per target email so nobody's inbox can be flooded.
+const forgotIpLimiter = rateLimit({
+  windowMs: ONE_HOUR,
+  max: 10,
+  message: "Too many requests. Please try again later.",
+});
+const forgotEmailLimiter = rateLimit({
+  windowMs: ONE_HOUR,
+  max: 3,
+  keyGenerator: emailKey,
+  message:
+    "We've already sent a few reset emails to this address. Please check your inbox, including spam, or try again later.",
+});
+
+const setPasswordLimiter = rateLimit({ windowMs: FIFTEEN_MIN, max: 20 });
+
+authRouter.post(
+  "/login",
+  loginIpLimiter,
+  loginEmailLimiter,
+  async (req, res, next) => {
   try {
     const { email, password } = LoginInput.parse(req.body);
     const member = await MemberModel.findOne({ email });
@@ -18,6 +65,13 @@ authRouter.post("/login", async (req, res, next) => {
         throw new HttpError(
           403,
           "Your membership is awaiting payment. Please check your email for the payment link sent when your application was approved."
+        );
+      }
+      // Paid & active, but they haven't chosen a password via the emailed link.
+      if (member && !member.passwordHash) {
+        throw new HttpError(
+          403,
+          "Please set your password first using the link we emailed you after payment, then sign in."
         );
       }
       throw new HttpError(401, "Invalid email or password");
@@ -81,7 +135,49 @@ authRouter.get("/me", requireAuth, async (req, res, next) => {
   }
 });
 
-authRouter.post("/set-password", async (req, res, next) => {
+authRouter.post(
+  "/forgot-password",
+  forgotIpLimiter,
+  forgotEmailLimiter,
+  async (req, res, next) => {
+  try {
+    const { email } = ForgotPasswordInput.parse(req.body);
+    const member = await MemberModel.findOne({ email });
+
+    // Only active accounts can sign in, so only they can reset. We always
+    // respond the same way regardless of whether the account exists, so this
+    // endpoint can't be used to discover which emails are registered.
+    if (member && member.status === "active") {
+      const token = crypto.randomBytes(32).toString("hex");
+      const expires = new Date(Date.now() + 2 * 60 * 60 * 1000); // 2 hours
+      member.setPasswordToken = token;
+      member.tokenExpiresAt = expires;
+      await member.save();
+
+      try {
+        const tpl = resetPasswordEmail({
+          fullName: member.fullName,
+          resetUrl: `${config.publicBaseUrl}/set-password/${token}`,
+          expiresAt: expires,
+        });
+        await sendEmail({
+          to: member.email,
+          subject: tpl.subject,
+          html: tpl.html,
+          text: tpl.text,
+        });
+      } catch (err) {
+        console.error("[reset-email] failed", err);
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+authRouter.post("/set-password", setPasswordLimiter, async (req, res, next) => {
   try {
     const { token, password } = SetPasswordInput.parse(req.body);
     const member = await MemberModel.findOne({ setPasswordToken: token });

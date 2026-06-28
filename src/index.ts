@@ -17,6 +17,11 @@ async function main(): Promise<void> {
 
   const app = express();
 
+  // Trust one reverse-proxy hop so req.ip reflects the real client (needed for
+  // rate limiting). Adjust the number if you sit behind more proxies. Safe for
+  // cookies here since their secure/sameSite flags derive from NODE_ENV, not req.
+  app.set("trust proxy", 1);
+
   app.use(
     cors({
       origin: config.frontendOrigin,

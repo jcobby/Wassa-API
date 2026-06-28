@@ -15,7 +15,7 @@ import {
   verifyWebhookSignature,
   type VerifyResponse,
 } from "../payments/paystack.js";
-import { generateRandomPassword, hashPassword } from "../utils/password.js";
+import crypto from "node:crypto";
 import { sendEmail } from "../email/client.js";
 import { welcomeEmail } from "../email/templates/welcome.js";
 import { config } from "../config.js";
@@ -229,8 +229,9 @@ type FulfillResult = {
   status: "success" | "failed" | "pending";
   memberId?: string;
   email?: string;
-  // Only returned the FIRST time we fulfill, never on re-checks
-  generatedPassword?: string;
+  // One-time token to set a password — only returned the FIRST time we fulfill,
+  // never on re-checks. The member also receives it by email.
+  setPasswordToken?: string;
   alreadyFulfilled?: boolean;
   paystack: VerifyResponse;
 };
@@ -291,11 +292,16 @@ async function fulfillPayment(reference: string): Promise<FulfillResult> {
   const member = await MemberModel.findById(payment.memberId);
   if (!member) throw new HttpError(404, "Member not found");
 
-  let plainPassword: string | undefined;
+  // Activate the member, but never mint a password ourselves. Instead issue a
+  // one-time set-password link so no plaintext credential is ever transmitted
+  // or stored. The member chooses their own password before first sign-in.
+  let setPasswordToken: string | undefined;
   if (member.status !== "active" || !member.passwordHash) {
-    plainPassword = generateRandomPassword(12);
-    member.passwordHash = await hashPassword(plainPassword);
-    member.mustChangePassword = true;
+    setPasswordToken = crypto.randomBytes(32).toString("hex");
+    const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
+    member.setPasswordToken = setPasswordToken;
+    member.tokenExpiresAt = expires;
+    member.mustChangePassword = false;
     member.status = "active";
     member.accessToken = null;
     member.accessTokenExpiresAt = null;
@@ -305,7 +311,8 @@ async function fulfillPayment(reference: string): Promise<FulfillResult> {
       const tpl = welcomeEmail({
         fullName: member.fullName,
         email: member.email,
-        password: plainPassword,
+        setPasswordUrl: `${config.publicBaseUrl}/set-password/${setPasswordToken}`,
+        expiresAt: expires,
       });
       await sendEmail({
         to: member.email,
@@ -315,7 +322,7 @@ async function fulfillPayment(reference: string): Promise<FulfillResult> {
       });
     } catch (err) {
       console.error("[welcome-email] failed", err);
-      // Don't throw — the success page will still show credentials
+      // Don't throw — the success page still surfaces the set-password link.
     }
   }
 
@@ -323,7 +330,7 @@ async function fulfillPayment(reference: string): Promise<FulfillResult> {
     status: "success",
     memberId: String(member._id),
     email: member.email,
-    generatedPassword: plainPassword,
+    setPasswordToken,
     paystack: verify,
   };
 }
