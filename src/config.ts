@@ -12,26 +12,31 @@ export const config = {
   port: Number(process.env.PORT ?? 4000),
   mongoUri: required("MONGO_URI"),
   jwtSecret: required("JWT_SECRET"),
-  frontendOrigin: required("FRONTEND_ORIGIN"),
+  // Trailing slash stripped so a value like "https://site.org/" still matches
+  // the browser's slash-less Origin header in CORS.
+  frontendOrigin: required("FRONTEND_ORIGIN").replace(/\/$/, ""),
   cookieDomain: process.env.COOKIE_DOMAIN || undefined,
   nodeEnv: process.env.NODE_ENV ?? "development",
   isProd: process.env.NODE_ENV === "production",
 
-  publicBaseUrl:
-    process.env.PUBLIC_BASE_URL ?? process.env.FRONTEND_ORIGIN ?? "http://localhost:3000",
+  publicBaseUrl: (
+    process.env.PUBLIC_BASE_URL ??
+    process.env.FRONTEND_ORIGIN ??
+    "http://localhost:3000"
+  ).replace(/\/$/, ""),
 
-  // Address all transactional email is sent "from". Must be your Zoho account
-  // or one of its verified aliases (e.g. admin@wassaprosnetwork.org).
+  // Address all transactional email is sent "from". Must be a verified sender
+  // on your ZeptoMail domain (e.g. admin@wassaprosnetwork.org).
   emailFrom: process.env.EMAIL_FROM ?? "WPN <admin@wassaprosnetwork.org>",
 
-  // SMTP (Zoho Mail) — how outgoing email is actually sent. Hosted Zoho
-  // (custom-domain) accounts use smtppro.zoho.com; free/personal use smtp.zoho.com.
-  smtpHost: process.env.SMTP_HOST ?? "smtppro.zoho.com",
-  smtpPort: Number(process.env.SMTP_PORT ?? 465),
-  smtpUser: process.env.SMTP_USER ?? "",
-  // Generate an app-specific password in Zoho (Settings → Security → App
-  // Passwords) — your normal login password won't work for SMTP with 2FA on.
-  smtpPass: process.env.SMTP_PASS ?? "",
+  // ZeptoMail (Zoho's transactional email API) — sends over HTTPS, because many
+  // cloud hosts (Render included) block outbound SMTP. Token comes from a
+  // ZeptoMail "Mail Agent"; URL is region-specific (.com US / .eu EU / .in IN).
+  zeptoToken: process.env.ZEPTOMAIL_TOKEN ?? "",
+  zeptoUrl: (process.env.ZEPTOMAIL_URL ?? "https://api.zeptomail.com").replace(
+    /\/$/,
+    ""
+  ),
 
   // Dev-only: if set, route ALL outgoing email to this address regardless of
   // the real recipient. Handy while testing so you don't email real applicants.
