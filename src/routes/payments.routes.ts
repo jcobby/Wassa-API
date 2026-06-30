@@ -244,14 +244,28 @@ async function fulfillPayment(reference: string): Promise<FulfillResult> {
   const verify = await verifyTransaction(reference);
 
   if (payment.status === "success") {
-    // Idempotent — return the current state without doing anything
+    // Idempotent. If the webhook fulfilled this payment first, the member may
+    // still not have set a password — surface their existing (unexpired) token
+    // so the success page can show the "Set your password" button regardless of
+    // which path ran fulfillment first.
     const member = await MemberModel.findById(payment.memberId).select(
-      "email"
+      "email setPasswordToken passwordHash tokenExpiresAt"
     );
+    let pendingToken: string | undefined;
+    if (
+      member &&
+      !member.passwordHash &&
+      member.setPasswordToken &&
+      member.tokenExpiresAt &&
+      member.tokenExpiresAt.getTime() > Date.now()
+    ) {
+      pendingToken = member.setPasswordToken;
+    }
     return {
       status: "success",
       memberId: String(payment.memberId),
       email: member?.email,
+      setPasswordToken: pendingToken,
       alreadyFulfilled: true,
       paystack: verify,
     };

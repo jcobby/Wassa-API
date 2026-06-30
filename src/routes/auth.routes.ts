@@ -177,6 +177,23 @@ authRouter.post(
   }
 });
 
+// Public: is this set-password token still usable? Lets the page show an
+// "already used / sign in" message instead of a form that errors on submit.
+authRouter.get("/set-password/:token/status", async (req, res, next) => {
+  try {
+    const member = await MemberModel.findOne({
+      setPasswordToken: req.params.token,
+    }).select("tokenExpiresAt");
+    const valid =
+      !!member &&
+      !!member.tokenExpiresAt &&
+      member.tokenExpiresAt.getTime() > Date.now();
+    res.json({ valid });
+  } catch (err) {
+    next(err);
+  }
+});
+
 authRouter.post("/set-password", setPasswordLimiter, async (req, res, next) => {
   try {
     const { token, password } = SetPasswordInput.parse(req.body);
