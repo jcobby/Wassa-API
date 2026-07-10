@@ -1,4 +1,4 @@
-import { config } from "../../config.js";
+import { logoTag, daysUntil } from "../shared.js";
 
 type Args = {
   fullName: string;
@@ -13,6 +13,7 @@ export function welcomeEmail({ fullName, email, setPasswordUrl, expiresAt }: Arg
     month: "long",
     year: "numeric",
   });
+  const days = daysUntil(expiresAt);
 
   const html = `
 <!doctype html>
@@ -24,6 +25,7 @@ export function welcomeEmail({ fullName, email, setPasswordUrl, expiresAt }: Arg
           <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e8e3d7;">
             <tr>
               <td style="background:#0d2818;padding:32px 40px;color:#f6f4ee;">
+                ${logoTag}
                 <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#c8a04c;">Wassa Professionals Network</div>
                 <h1 style="margin:8px 0 0;font-size:24px;font-weight:600;">Welcome to WPN</h1>
               </td>
@@ -58,7 +60,7 @@ export function welcomeEmail({ fullName, email, setPasswordUrl, expiresAt }: Arg
                   ${setPasswordUrl}
                 </p>
                 <p style="margin:0;font-size:13px;color:#6a7a70;">
-                  This link is valid until <strong>${expiry}</strong>. If it expires before you set your password, contact the General Secretary.
+                  This link is valid for <strong>${days} days</strong> (until ${expiry}). If it expires before you set your password, contact the General Secretary.
                 </p>
               </td>
             </tr>
@@ -86,7 +88,7 @@ ${setPasswordUrl}
 
 Your sign-in email is: ${email}
 
-This link is valid until ${expiry}.
+This link is valid for ${days} days (until ${expiry}).
 
 — The Wassa Professionals Network`;
 
@@ -104,6 +106,3 @@ function escape(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
-
-// Keep config import used (avoid TS unused warning if needed later)
-void config;

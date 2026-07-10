@@ -4,7 +4,11 @@ import { MemberModel } from "../models/Member.js";
 import { PaymentModel } from "../models/Payment.js";
 import { DuesModel } from "../models/Dues.js";
 import { getOrCreateSettings } from "../models/Settings.js";
-import { InitializePaymentInput } from "../utils/validation.js";
+import { memberDuesStatus } from "../utils/dues.js";
+import {
+  InitializePaymentInput,
+  InitializeDuesInput,
+} from "../utils/validation.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/requireAdmin.js";
 import { HttpError } from "../middleware/error.js";
@@ -113,6 +117,92 @@ paymentsRouter.post("/initialize", async (req, res, next) => {
       amount: settings.membershipFee.amount,
       currency: settings.membershipFee.currency,
       email: member.email,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Auth: the signed-in member's quarterly dues status for the current year.
+paymentsRouter.get("/dues/status", requireAuth, async (req, res, next) => {
+  try {
+    const status = await memberDuesStatus(
+      String(req.user!.sub),
+      new Date().getFullYear()
+    );
+    res.json(status);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Auth: start a Paystack payment for one quarter of the signed-in member's dues.
+paymentsRouter.post("/dues/initialize", requireAuth, async (req, res, next) => {
+  try {
+    const { year, quarter } = InitializeDuesInput.parse(req.body);
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentQuarter = Math.floor(now.getMonth() / 3) + 1;
+    // Only the current or a past-due quarter of the current year.
+    if (year !== currentYear || quarter > currentQuarter) {
+      throw new HttpError(
+        400,
+        "You can only pay dues for the current or a past-due quarter."
+      );
+    }
+
+    const member = await MemberModel.findById(req.user!.sub);
+    if (!member) throw new HttpError(404, "Member not found");
+    if (member.status !== "active") {
+      throw new HttpError(403, "Your account is not active");
+    }
+
+    const isWaived = (member.duesWaivers ?? []).some(
+      (w) => w.year === year && w.quarter === quarter
+    );
+    if (isWaived) throw new HttpError(400, "Dues for this quarter have been waived.");
+
+    const already = await PaymentModel.findOne({
+      memberId: member._id,
+      purpose: "dues_renewal",
+      status: "success",
+      year,
+      quarter,
+    });
+    if (already) throw new HttpError(409, "Dues for this quarter are already paid.");
+
+    const settings = await getOrCreateSettings();
+    const reference = newReference("wpndues");
+    const callbackUrl = `${config.publicBaseUrl}/dashboard/dues`;
+
+    const paystackData = await initializeTransaction({
+      email: member.email,
+      amount: settings.quarterlyDues.amount,
+      currency: settings.quarterlyDues.currency,
+      reference,
+      callbackUrl,
+      metadata: {
+        memberId: String(member._id),
+        purpose: "dues_renewal",
+        year,
+        quarter,
+      },
+    });
+
+    await PaymentModel.create({
+      memberId: member._id,
+      reference,
+      amount: settings.quarterlyDues.amount,
+      currency: settings.quarterlyDues.currency,
+      status: "initialized",
+      purpose: "dues_renewal",
+      year,
+      quarter,
+    });
+
+    res.json({
+      authorizationUrl: paystackData.authorization_url,
+      reference: paystackData.reference,
     });
   } catch (err) {
     next(err);
@@ -287,20 +377,23 @@ async function fulfillPayment(reference: string): Promise<FulfillResult> {
   payment.paystackData = verify;
   await payment.save();
 
-  // Update Dues for the year
-  await DuesModel.findOneAndUpdate(
-    { memberId: payment.memberId, year: payment.year },
-    {
-      $set: {
-        amountPaid: payment.amount,
-        paid: true,
-        paidAt: new Date(),
-        method: "Paystack",
-        reference: payment.reference,
+  // The annual Dues record is only for the initial-membership payment.
+  // Quarterly dues are tracked on the Payment record itself (by quarter).
+  if (payment.purpose === "membership_initial") {
+    await DuesModel.findOneAndUpdate(
+      { memberId: payment.memberId, year: payment.year },
+      {
+        $set: {
+          amountPaid: payment.amount,
+          paid: true,
+          paidAt: new Date(),
+          method: "Paystack",
+          reference: payment.reference,
+        },
       },
-    },
-    { upsert: true, new: true }
-  );
+      { upsert: true, new: true }
+    );
+  }
 
   // Activate member + generate credentials
   const member = await MemberModel.findById(payment.memberId);

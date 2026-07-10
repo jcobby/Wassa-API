@@ -1,4 +1,4 @@
-import { config } from "../../config.js";
+import { logoTag } from "../shared.js";
 
 type Args = {
   fullName: string;
@@ -25,6 +25,7 @@ export function resetPasswordEmail({ fullName, resetUrl, expiresAt }: Args) {
           <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e8e3d7;">
             <tr>
               <td style="background:#0d2818;padding:32px 40px;color:#f6f4ee;">
+                ${logoTag}
                 <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#c8a04c;">Wassa Professionals Network</div>
                 <h1 style="margin:8px 0 0;font-size:24px;font-weight:600;">Reset your password</h1>
               </td>
@@ -92,5 +93,3 @@ function escape(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
-
-void config;

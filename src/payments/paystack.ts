@@ -102,10 +102,12 @@ export function verifyWebhookSignature(
     .createHmac("sha512", config.paystackSecretKey)
     .update(typeof rawBody === "string" ? rawBody : rawBody.toString("utf8"))
     .digest("hex");
-  return crypto.timingSafeEqual(
-    Buffer.from(computed, "hex"),
-    Buffer.from(signature, "hex")
-  );
+  const a = Buffer.from(computed, "hex");
+  const b = Buffer.from(signature, "hex");
+  // timingSafeEqual throws on length mismatch — a malformed signature must
+  // simply fail verification, not raise.
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
 }
 
 export function newReference(prefix = "wpn"): string {

@@ -9,6 +9,15 @@ const NextOfKinSchema = new Schema(
   { _id: false }
 );
 
+// A quarter an admin has waived — the member does not owe dues for it.
+const DuesWaiverSchema = new Schema(
+  {
+    year: { type: Number, required: true },
+    quarter: { type: Number, required: true },
+  },
+  { _id: false }
+);
+
 const MemberSchema = new Schema(
   {
     // Snapshot of approved application
@@ -69,6 +78,9 @@ const MemberSchema = new Schema(
 
     joinedAt: { type: Date, default: () => new Date() },
     lastLoginAt: { type: Date },
+
+    // Quarters an admin has waived (member owes no dues for these).
+    duesWaivers: { type: [DuesWaiverSchema], default: [] },
 
     // Provenance
     applicationId: { type: Schema.Types.ObjectId, ref: "Application" },

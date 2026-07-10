@@ -90,6 +90,17 @@ export const InitializePaymentInput = z.object({
   accessToken: z.string().min(10),
 });
 
+export const InitializeDuesInput = z.object({
+  year: z.number().int().min(2020).max(2100),
+  quarter: z.number().int().min(1).max(4),
+});
+
+export const DuesWaiverInput = z.object({
+  year: z.number().int().min(2020).max(2100),
+  quarter: z.number().int().min(1).max(4),
+  waived: z.boolean(),
+});
+
 export const ChangePasswordInput = z.object({
   currentPassword: z.string().min(1),
   newPassword: z.string().min(8),

@@ -24,6 +24,8 @@ const PaymentSchema = new Schema(
       index: true,
     },
     year: { type: Number, required: true, index: true },
+    // Calendar quarter (1-4) for dues_renewal payments; null for membership_initial.
+    quarter: { type: Number, default: null, index: true },
     paystackData: { type: Schema.Types.Mixed, default: null },
     completedAt: { type: Date, default: null },
   },

@@ -8,7 +8,9 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "seed:admin": "tsx src/scripts/seedAdmin.ts",
-    "test:email": "tsx src/scripts/testEmail.ts"
+    "test:email": "tsx src/scripts/testEmail.ts",
+    "admins": "tsx src/scripts/listAdmins.ts",
+    "set-role": "tsx src/scripts/setRole.ts"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

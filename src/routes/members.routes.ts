@@ -2,6 +2,8 @@ import { Router } from "express";
 import crypto from "node:crypto";
 import { MemberModel } from "../models/Member.js";
 import { getOrCreateSettings } from "../models/Settings.js";
+import { memberDuesStatus } from "../utils/dues.js";
+import { DuesWaiverInput } from "../utils/validation.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/requireAdmin.js";
 import { HttpError } from "../middleware/error.js";
@@ -104,6 +106,53 @@ membersRouter.get(
       const hasPassword = Boolean(obj.passwordHash);
       delete obj.passwordHash;
       res.json({ ...obj, hasPassword });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Admin: a member's quarterly dues status (paid / waived / due per quarter)
+membersRouter.get(
+  "/:id/dues",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const exists = await MemberModel.exists({ _id: req.params.id });
+      if (!exists) throw new HttpError(404, "Member not found");
+      res.json(await memberDuesStatus(req.params.id, new Date().getFullYear()));
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Admin: waive (or un-waive) a member's dues for a specific quarter
+membersRouter.post(
+  "/:id/dues-waiver",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const { year, quarter, waived } = DuesWaiverInput.parse(req.body);
+      const member = await MemberModel.findById(req.params.id);
+      if (!member) throw new HttpError(404, "Member not found");
+
+      const has = member.duesWaivers.some(
+        (w) => w.year === year && w.quarter === quarter
+      );
+      if (waived && !has) {
+        member.duesWaivers.push({ year, quarter });
+        await member.save();
+      } else if (!waived && has) {
+        const idx = member.duesWaivers.findIndex(
+          (w) => w.year === year && w.quarter === quarter
+        );
+        if (idx >= 0) member.duesWaivers.splice(idx, 1);
+        await member.save();
+      }
+      res.json(await memberDuesStatus(req.params.id, new Date().getFullYear()));
     } catch (err) {
       next(err);
     }

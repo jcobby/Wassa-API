@@ -19,6 +19,12 @@ const SettingsSchema = new Schema(
       required: true,
       default: () => ({}),
     },
+    // Recurring dues charged every calendar quarter.
+    quarterlyDues: {
+      type: MembershipFeeSchema,
+      required: true,
+      default: () => ({ amount: 300, currency: "GHS" }),
+    },
     updatedBy: { type: Schema.Types.ObjectId, ref: "Member" },
   },
   { timestamps: true }

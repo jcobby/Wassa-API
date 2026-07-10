@@ -1,4 +1,4 @@
-import { config } from "../../config.js";
+import { logoTag, daysUntil } from "../shared.js";
 
 type Args = {
   fullName: string;
@@ -21,6 +21,7 @@ export function approvalEmail({
     month: "long",
     year: "numeric",
   });
+  const days = daysUntil(expiresAt);
 
   const html = `
 <!doctype html>
@@ -32,6 +33,7 @@ export function approvalEmail({
           <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e8e3d7;">
             <tr>
               <td style="background:#0d2818;padding:32px 40px;color:#f6f4ee;">
+                ${logoTag}
                 <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#c8a04c;">Wassa Professionals Network</div>
                 <h1 style="margin:8px 0 0;font-size:24px;font-weight:600;">Application approved</h1>
               </td>
@@ -43,7 +45,7 @@ export function approvalEmail({
                   Your application to join the Wassa Professionals Network has been approved by the Executive Council. To complete your membership, please pay the annual membership fee of <strong>${amountFormatted}</strong>.
                 </p>
                 <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#3a4a40;">
-                  Payment is accepted via MTN MoMo, Vodafone Cash, AirtelTigo Money, debit/credit card, and bank transfer. After successful payment, your member account will be created and your login credentials will be displayed and emailed to you.
+                  Payment is accepted via MTN MoMo, Vodafone Cash, AirtelTigo Money, debit/credit card, and bank transfer. After successful payment, your membership is activated and you&rsquo;ll receive a link to set your own password and sign in.
                 </p>
                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
                   <tr>
@@ -59,7 +61,7 @@ export function approvalEmail({
                   ${paymentUrl}
                 </p>
                 <p style="margin:0;font-size:13px;color:#6a7a70;">
-                  This payment link is valid until <strong>${expiry}</strong>. If you don't complete payment by then, contact the General Secretary.
+                  This payment link is valid for <strong>${days} days</strong> (until ${expiry}). If you don't complete payment by then, contact the General Secretary.
                 </p>
               </td>
             </tr>
@@ -87,9 +89,9 @@ Payment is accepted via MTN MoMo, Vodafone Cash, AirtelTigo Money, debit/credit 
 Complete payment here:
 ${paymentUrl}
 
-This link is valid until ${expiry}.
+This link is valid for ${days} days (until ${expiry}).
 
-After successful payment, your member account will be created and your login credentials emailed to you.
+After successful payment, your membership is activated and you'll receive a link to set your own password and sign in.
 
 — The Wassa Professionals Network`;
 
@@ -107,6 +109,3 @@ function escape(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
 }
-
-// Keep config import used (avoid TS unused warning if needed later)
-void config;

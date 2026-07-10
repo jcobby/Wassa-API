@@ -52,5 +52,28 @@ settingsRouter.patch(
   }
 );
 
+// Admin: update quarterly dues amount
+settingsRouter.patch(
+  "/quarterly-dues",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const input = UpdateMembershipFeeInput.parse(req.body);
+      const s = await getOrCreateSettings();
+      s.quarterlyDues.amount = input.amount;
+      if (input.currency) s.quarterlyDues.currency = input.currency;
+      s.updatedBy = req.user!.sub as unknown as typeof s.updatedBy;
+      await s.save();
+      res.json({
+        amount: s.quarterlyDues.amount,
+        currency: s.quarterlyDues.currency,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
 // Ensure the model is registered eagerly (used by other modules)
 void SettingsModel;
