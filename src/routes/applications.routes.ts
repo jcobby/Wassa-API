@@ -15,7 +15,19 @@ import { sendEmail } from "../email/client.js";
 import { approvalEmail } from "../email/templates/approval.js";
 import { verifyEmailTemplate } from "../email/templates/verifyEmail.js";
 import { rateLimit } from "../middleware/rateLimit.js";
+import { uniqueApplicantCode } from "../utils/applicantId.js";
 import { config } from "../config.js";
+
+// A WPN identity code not already used by any application or member.
+async function nextApplicantId(): Promise<string> {
+  return uniqueApplicantCode(async (code) => {
+    const [a, m] = await Promise.all([
+      ApplicationModel.exists({ applicantId: code }),
+      MemberModel.exists({ applicantId: code }),
+    ]);
+    return Boolean(a || m);
+  });
+}
 
 export const applicationsRouter = Router();
 
@@ -37,10 +49,52 @@ const UNCONFIRMED_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 applicationsRouter.post("/", submitLimiter, async (req, res, next) => {
   try {
     const input = ApplicationInput.parse(req.body);
+
+    // Guard against duplicate signups for the same email (email is already
+    // lowercased/trimmed by the validator).
+    // 1) Already a member — nothing to apply for; point them at login.
+    const existingMember = await MemberModel.findOne({ email: input.email })
+      .select("_id")
+      .lean();
+    if (existingMember) {
+      throw new HttpError(
+        409,
+        "An account with this email already exists. Please log in, or use “Forgot password” if you’ve lost access."
+      );
+    }
+    // 2) Look at any prior applications for this email.
+    const priorApps = await ApplicationModel.find({ email: input.email })
+      .select("_id status emailVerified")
+      .lean();
+    if (priorApps.some((a) => a.status === "approved")) {
+      throw new HttpError(
+        409,
+        "An application with this email has already been approved. Check your inbox for your payment/login link, or contact us for help."
+      );
+    }
+    if (priorApps.some((a) => a.status === "pending" && a.emailVerified)) {
+      throw new HttpError(
+        409,
+        "You’ve already applied with this email and it’s under review — no need to apply again."
+      );
+    }
+    // Any leftover *unconfirmed* pending applications are stale (the applicant
+    // never clicked the confirm link). Remove them so this fresh submission
+    // replaces them cleanly instead of piling up duplicates. Rejected apps are
+    // left untouched so a rejected person can legitimately re-apply.
+    const staleIds = priorApps
+      .filter((a) => a.status === "pending" && !a.emailVerified)
+      .map((a) => a._id);
+    if (staleIds.length) {
+      await ApplicationModel.deleteMany({ _id: { $in: staleIds } });
+    }
+
     const verifyToken = crypto.randomBytes(32).toString("hex");
     const verifyTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    const applicantId = await nextApplicantId();
     const app = await ApplicationModel.create({
       ...input,
+      applicantId,
       emailVerified: false,
       verifyToken,
       verifyTokenExpiresAt,
@@ -71,6 +125,7 @@ applicationsRouter.post("/", submitLimiter, async (req, res, next) => {
 
     res.status(201).json({
       id: String(app._id),
+      applicantId: app.applicantId,
       status: app.status,
       submittedAt: app.submittedAt,
       emailSent,
@@ -258,7 +313,16 @@ applicationsRouter.patch(
       const token = crypto.randomBytes(32).toString("hex");
       const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
 
+      // Keep the same WPN code from application → membership. Legacy apps made
+      // before codes existed get one issued now.
+      let applicantId = app.applicantId;
+      if (!applicantId) {
+        applicantId = await nextApplicantId();
+        app.applicantId = applicantId;
+      }
+
       const member = await MemberModel.create({
+        applicantId,
         fullName: app.fullName,
         title: app.title,
         titleOther: app.titleOther,
@@ -363,6 +427,7 @@ applicationsRouter.patch(
 
 type RawApp = {
   _id: unknown;
+  applicantId?: string | null;
   fullName: string;
   email: string;
   emailVerified?: boolean;
@@ -375,6 +440,7 @@ type RawApp = {
 function formatList(app: RawApp) {
   return {
     id: String(app._id),
+    applicantId: app.applicantId ?? null,
     fullName: app.fullName,
     email: app.email,
     emailVerified: Boolean(app.emailVerified),

@@ -33,6 +33,14 @@ export async function memberDuesStatus(memberId: string, year: number) {
       .filter((q): q is number => !!q)
   );
 
+  // Quarters the association has disabled for everyone — no one owes them.
+  const disabled = new Set(
+    (settings.disabledDuesQuarters ?? [])
+      .filter((d) => d.year === year)
+      .map((d) => d.quarter)
+      .filter((q): q is number => !!q)
+  );
+
   return {
     year,
     currentQuarter,
@@ -42,7 +50,12 @@ export async function memberDuesStatus(memberId: string, year: number) {
       quarter: q,
       paid: paidQuarters.has(q),
       waived: waived.has(q),
-      due: q <= currentQuarter && !paidQuarters.has(q) && !waived.has(q),
+      disabled: disabled.has(q),
+      due:
+        q <= currentQuarter &&
+        !paidQuarters.has(q) &&
+        !waived.has(q) &&
+        !disabled.has(q),
     })),
   };
 }

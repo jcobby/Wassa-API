@@ -118,7 +118,7 @@ authRouter.post("/logout", (_req, res) => {
 authRouter.get("/me", requireAuth, async (req, res, next) => {
   try {
     const member = await MemberModel.findById(req.user!.sub).select(
-      "fullName email role status"
+      "fullName email role status applicantId"
     );
     if (!member) {
       throw new HttpError(401, "Session not valid");
@@ -129,6 +129,7 @@ authRouter.get("/me", requireAuth, async (req, res, next) => {
       role: member.role,
       fullName: member.fullName,
       status: member.status,
+      applicantId: member.applicantId ?? null,
     });
   } catch (err) {
     next(err);

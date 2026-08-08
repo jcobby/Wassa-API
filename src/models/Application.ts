@@ -11,6 +11,11 @@ const NextOfKinSchema = new Schema(
 
 const ApplicationSchema = new Schema(
   {
+    // Public-facing WPN identity code, e.g. "WPN-7K3M9Q". Issued on submission
+    // and carried onto the Member record when approved. Sparse so any legacy
+    // documents without one don't clash on the unique index.
+    applicantId: { type: String, unique: true, sparse: true },
+
     // Section A
     fullName: { type: String, required: true, trim: true },
     title: {

@@ -86,6 +86,13 @@ export const UpdateMembershipFeeInput = z.object({
   currency: z.string().trim().length(3).toUpperCase().optional(),
 });
 
+// Turn dues collection for one quarter on/off for the whole membership.
+export const DisableQuarterInput = z.object({
+  year: z.number().int().min(2020).max(2100),
+  quarter: z.number().int().min(1).max(4),
+  disabled: z.boolean(),
+});
+
 export const InitializePaymentInput = z.object({
   accessToken: z.string().min(10),
 });

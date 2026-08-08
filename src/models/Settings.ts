@@ -11,6 +11,16 @@ const MembershipFeeSchema = new Schema(
   { _id: false }
 );
 
+// A quarter for which dues collection is turned off for the whole membership —
+// nobody owes or can pay it (a global waiver). Admin-controlled.
+const DisabledQuarterSchema = new Schema(
+  {
+    year: { type: Number, required: true },
+    quarter: { type: Number, required: true },
+  },
+  { _id: false }
+);
+
 const SettingsSchema = new Schema(
   {
     key: { type: String, required: true, unique: true, default: "global" },
@@ -25,6 +35,8 @@ const SettingsSchema = new Schema(
       required: true,
       default: () => ({ amount: 300, currency: "GHS" }),
     },
+    // Quarters where dues collection is disabled for everyone.
+    disabledDuesQuarters: { type: [DisabledQuarterSchema], default: [] },
     updatedBy: { type: Schema.Types.ObjectId, ref: "Member" },
   },
   { timestamps: true }

@@ -172,6 +172,15 @@ paymentsRouter.post("/dues/initialize", requireAuth, async (req, res, next) => {
     if (already) throw new HttpError(409, "Dues for this quarter are already paid.");
 
     const settings = await getOrCreateSettings();
+    const quarterDisabled = (settings.disabledDuesQuarters ?? []).some(
+      (d) => d.year === year && d.quarter === quarter
+    );
+    if (quarterDisabled) {
+      throw new HttpError(
+        400,
+        "Dues collection for this quarter has been turned off by the association."
+      );
+    }
     const reference = newReference("wpndues");
     const callbackUrl = `${config.publicBaseUrl}/dashboard/dues`;
 

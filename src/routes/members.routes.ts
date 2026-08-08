@@ -47,7 +47,7 @@ membersRouter.get("/", requireAuth, requireAdmin, async (req, res, next) => {
     }
     const members = await MemberModel.find(filter)
       .select(
-        "fullName email role status joinedAt occupation countryOfResidence"
+        "applicantId fullName email role status joinedAt occupation countryOfResidence"
       )
       .sort({ joinedAt: -1 })
       .limit(500)
@@ -55,6 +55,7 @@ membersRouter.get("/", requireAuth, requireAdmin, async (req, res, next) => {
     res.json(
       members.map((m) => ({
         id: String(m._id),
+        applicantId: m.applicantId ?? null,
         fullName: m.fullName,
         email: m.email,
         role: m.role,
