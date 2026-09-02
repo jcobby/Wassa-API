@@ -20,9 +20,10 @@ const DuesWaiverSchema = new Schema(
 
 const MemberSchema = new Schema(
   {
-    // Public-facing WPN identity code, e.g. "WPN-7K3M9Q". Carried over from the
-    // member's application so it stays the same for life. Sparse so legacy
-    // records without one don't clash on the unique index.
+    // Public-facing WPN identity code, e.g. "WPN-7K3M9Q". Issued when the
+    // Executive Council approves the application and copied here, so it stays
+    // the same for life. Sparse so legacy records without one don't clash on
+    // the unique index.
     applicantId: { type: String, unique: true, sparse: true },
 
     // Snapshot of approved application

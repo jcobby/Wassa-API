@@ -3,11 +3,19 @@ import { logoTag, daysUntil } from "../shared.js";
 type Args = {
   fullName: string;
   email: string;
+  // Absent only for legacy members admitted before identity codes existed.
+  applicantId?: string | null;
   setPasswordUrl: string;
   expiresAt: Date;
 };
 
-export function welcomeEmail({ fullName, email, setPasswordUrl, expiresAt }: Args) {
+export function welcomeEmail({
+  fullName,
+  email,
+  applicantId,
+  setPasswordUrl,
+  expiresAt,
+}: Args) {
   const expiry = expiresAt.toLocaleDateString("en-GB", {
     day: "2-digit",
     month: "long",
@@ -44,6 +52,16 @@ export function welcomeEmail({ fullName, email, setPasswordUrl, expiresAt }: Arg
                       <div style="margin-top:4px;font-size:15px;font-family:monospace;color:#0d2818;">${escape(email)}</div>
                     </td>
                   </tr>
+                  ${
+                    applicantId
+                      ? `<tr>
+                    <td style="padding:0 24px 20px;">
+                      <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#6a7a70;">Your WPN membership ID</div>
+                      <div style="margin-top:4px;font-size:18px;font-weight:600;letter-spacing:2px;font-family:'SFMono-Regular',Consolas,Menlo,monospace;color:#0d2818;">${escape(applicantId)}</div>
+                    </td>
+                  </tr>`
+                      : ""
+                  }
                 </table>
 
                 <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;">
@@ -87,7 +105,7 @@ One last step — choose a password to secure your account:
 ${setPasswordUrl}
 
 Your sign-in email is: ${email}
-
+${applicantId ? `Your WPN membership ID is: ${applicantId}\n` : ""}
 This link is valid for ${days} days (until ${expiry}).
 
 — The Wassa Professionals Network`;

@@ -41,6 +41,7 @@ paymentsRouter.get("/access/:token", async (req, res, next) => {
       // Already paid & activated
       return res.json({
         memberId: String(member._id),
+        applicantId: member.applicantId ?? null,
         fullName: member.fullName,
         email: member.email,
         status: "active",
@@ -50,6 +51,7 @@ paymentsRouter.get("/access/:token", async (req, res, next) => {
     const settings = await getOrCreateSettings();
     res.json({
       memberId: String(member._id),
+      applicantId: member.applicantId ?? null,
       fullName: member.fullName,
       email: member.email,
       status: member.status,
@@ -328,6 +330,7 @@ type FulfillResult = {
   status: "success" | "failed" | "pending";
   memberId?: string;
   email?: string;
+  applicantId?: string | null;
   // One-time token to set a password — only returned the FIRST time we fulfill,
   // never on re-checks. The member also receives it by email.
   setPasswordToken?: string;
@@ -348,7 +351,7 @@ async function fulfillPayment(reference: string): Promise<FulfillResult> {
     // so the success page can show the "Set your password" button regardless of
     // which path ran fulfillment first.
     const member = await MemberModel.findById(payment.memberId).select(
-      "email setPasswordToken passwordHash tokenExpiresAt"
+      "email applicantId setPasswordToken passwordHash tokenExpiresAt"
     );
     let pendingToken: string | undefined;
     if (
@@ -364,6 +367,7 @@ async function fulfillPayment(reference: string): Promise<FulfillResult> {
       status: "success",
       memberId: String(payment.memberId),
       email: member?.email,
+      applicantId: member?.applicantId ?? null,
       setPasswordToken: pendingToken,
       alreadyFulfilled: true,
       paystack: verify,
@@ -427,6 +431,7 @@ async function fulfillPayment(reference: string): Promise<FulfillResult> {
       const tpl = welcomeEmail({
         fullName: member.fullName,
         email: member.email,
+        applicantId: member.applicantId,
         setPasswordUrl: `${config.publicBaseUrl}/set-password/${setPasswordToken}`,
         expiresAt: expires,
       });
@@ -446,6 +451,7 @@ async function fulfillPayment(reference: string): Promise<FulfillResult> {
     status: "success",
     memberId: String(member._id),
     email: member.email,
+    applicantId: member.applicantId ?? null,
     setPasswordToken,
     paystack: verify,
   };

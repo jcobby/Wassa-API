@@ -184,12 +184,14 @@ authRouter.get("/set-password/:token/status", async (req, res, next) => {
   try {
     const member = await MemberModel.findOne({
       setPasswordToken: req.params.token,
-    }).select("tokenExpiresAt");
+    }).select("tokenExpiresAt applicantId");
     const valid =
       !!member &&
       !!member.tokenExpiresAt &&
       member.tokenExpiresAt.getTime() > Date.now();
-    res.json({ valid });
+    // Only surfaced on a still-valid token, so it's shown to the person who
+    // holds the one-time link — the member themselves.
+    res.json({ valid, applicantId: valid ? member.applicantId ?? null : null });
   } catch (err) {
     next(err);
   }

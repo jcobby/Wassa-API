@@ -2,6 +2,7 @@ import { logoTag, daysUntil } from "../shared.js";
 
 type Args = {
   fullName: string;
+  applicantId: string;
   paymentUrl: string;
   amount: number;
   currency: string;
@@ -10,6 +11,7 @@ type Args = {
 
 export function approvalEmail({
   fullName,
+  applicantId,
   paymentUrl,
   amount,
   currency,
@@ -42,7 +44,24 @@ export function approvalEmail({
               <td style="padding:32px 40px;">
                 <p style="margin:0 0 16px;font-size:16px;line-height:1.6;">Dear ${escape(fullName)},</p>
                 <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#3a4a40;">
-                  Your application to join the Wassa Professionals Network has been approved by the Executive Council. To complete your membership, please pay the annual membership fee of <strong>${amountFormatted}</strong>.
+                  Your application to join the Wassa Professionals Network has been approved by the Executive Council. Your membership ID is below &mdash; it is yours for life.
+                </p>
+
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin:0 0 24px;background:#0d2818;border-radius:12px;">
+                  <tr>
+                    <td align="center" style="padding:24px;">
+                      <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#c8a04c;">Your WPN Membership ID</div>
+                      <div style="margin-top:8px;font-size:28px;font-weight:600;letter-spacing:3px;font-family:'SFMono-Regular',Consolas,Menlo,monospace;color:#f6f4ee;">${escape(applicantId)}</div>
+                    </td>
+                  </tr>
+                </table>
+
+                <p style="margin:0 0 16px;font-size:13px;line-height:1.6;color:#6a7a70;">
+                  Keep this ID safe. Quote it in any correspondence with the Secretariat, at WPN events, and when paying your dues. It also appears on your member dashboard once you sign in.
+                </p>
+
+                <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#3a4a40;">
+                  To complete your membership, please pay the registration fee of <strong>${amountFormatted}</strong>.
                 </p>
                 <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#3a4a40;">
                   Payment is accepted via MTN MoMo, Vodafone Cash, AirtelTigo Money, debit/credit card, and bank transfer. After successful payment, your membership is activated and you&rsquo;ll receive a link to set your own password and sign in.
@@ -82,7 +101,15 @@ Application Approved
 
 Dear ${fullName},
 
-Your application has been approved by the Executive Council. To complete your membership, please pay the annual fee of ${amountFormatted}.
+Your application has been approved by the Executive Council.
+
+  YOUR WPN MEMBERSHIP ID: ${applicantId}
+
+Keep this ID safe — it is yours for life. Quote it in any correspondence with
+the Secretariat, at WPN events, and when paying your dues. It also appears on
+your member dashboard once you sign in.
+
+To complete your membership, please pay the registration fee of ${amountFormatted}.
 
 Payment is accepted via MTN MoMo, Vodafone Cash, AirtelTigo Money, debit/credit card, and bank transfer.
 

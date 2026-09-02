@@ -11,6 +11,7 @@ import { sendEmail } from "../email/client.js";
 import { approvalEmail } from "../email/templates/approval.js";
 import { welcomeEmail } from "../email/templates/welcome.js";
 import { rateLimit } from "../middleware/rateLimit.js";
+import { nextApplicantId } from "../utils/applicantId.js";
 import { config } from "../config.js";
 
 const TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
@@ -176,6 +177,15 @@ membersRouter.post(
 
       const now = Date.now();
 
+      // Both emails below carry the member's WPN ID. Every member gets one at
+      // approval, so this only backfills legacy records predating the codes.
+      let applicantId = m.applicantId;
+      if (!applicantId) {
+        applicantId = await nextApplicantId();
+        m.applicantId = applicantId;
+        await m.save();
+      }
+
       if (m.status === "pending_payment") {
         let token = m.accessToken ?? "";
         let expires = m.accessTokenExpiresAt ?? null;
@@ -189,6 +199,7 @@ membersRouter.post(
         const settings = await getOrCreateSettings();
         const tpl = approvalEmail({
           fullName: m.fullName,
+          applicantId,
           paymentUrl: `${config.publicBaseUrl}/membership/payment/${token}`,
           amount: settings.membershipFee.amount,
           currency: settings.membershipFee.currency,
@@ -216,6 +227,7 @@ membersRouter.post(
         const tpl = welcomeEmail({
           fullName: m.fullName,
           email: m.email,
+          applicantId,
           setPasswordUrl: `${config.publicBaseUrl}/set-password/${token}`,
           expiresAt: expires,
         });

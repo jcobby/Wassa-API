@@ -15,19 +15,8 @@ import { sendEmail } from "../email/client.js";
 import { approvalEmail } from "../email/templates/approval.js";
 import { verifyEmailTemplate } from "../email/templates/verifyEmail.js";
 import { rateLimit } from "../middleware/rateLimit.js";
-import { uniqueApplicantCode } from "../utils/applicantId.js";
+import { nextApplicantId } from "../utils/applicantId.js";
 import { config } from "../config.js";
-
-// A WPN identity code not already used by any application or member.
-async function nextApplicantId(): Promise<string> {
-  return uniqueApplicantCode(async (code) => {
-    const [a, m] = await Promise.all([
-      ApplicationModel.exists({ applicantId: code }),
-      MemberModel.exists({ applicantId: code }),
-    ]);
-    return Boolean(a || m);
-  });
-}
 
 export const applicationsRouter = Router();
 
@@ -91,10 +80,10 @@ applicationsRouter.post("/", submitLimiter, async (req, res, next) => {
 
     const verifyToken = crypto.randomBytes(32).toString("hex");
     const verifyTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-    const applicantId = await nextApplicantId();
+    // No WPN code yet. An identity code means "admitted", so it is issued only
+    // when the Executive Council approves — see the approve handler below.
     const app = await ApplicationModel.create({
       ...input,
-      applicantId,
       emailVerified: false,
       verifyToken,
       verifyTokenExpiresAt,
@@ -125,7 +114,6 @@ applicationsRouter.post("/", submitLimiter, async (req, res, next) => {
 
     res.status(201).json({
       id: String(app._id),
-      applicantId: app.applicantId,
       status: app.status,
       submittedAt: app.submittedAt,
       emailSent,
@@ -313,8 +301,9 @@ applicationsRouter.patch(
       const token = crypto.randomBytes(32).toString("hex");
       const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000); // 14 days
 
-      // Keep the same WPN code from application → membership. Legacy apps made
-      // before codes existed get one issued now.
+      // Issue the WPN identity code. Approval is the moment someone becomes a
+      // member, so this is where the code is minted; it's then kept for life.
+      // Legacy applications that were assigned one at submission keep theirs.
       let applicantId = app.applicantId;
       if (!applicantId) {
         applicantId = await nextApplicantId();
@@ -368,6 +357,7 @@ applicationsRouter.patch(
       try {
         const tpl = approvalEmail({
           fullName: app.fullName,
+          applicantId,
           paymentUrl,
           amount: settings.membershipFee.amount,
           currency: settings.membershipFee.currency,
@@ -387,6 +377,7 @@ applicationsRouter.patch(
 
       res.json({
         memberId: String(member._id),
+        applicantId,
         application: { id: String(app._id), status: app.status },
         emailSent,
         emailError,
