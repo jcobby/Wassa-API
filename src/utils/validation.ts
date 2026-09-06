@@ -102,6 +102,30 @@ export const InitializeDuesInput = z.object({
   quarter: z.number().int().min(1).max(4),
 });
 
+// A voluntary contribution from anyone — no membership, no account required.
+// The amount is deliberately open-ended; the only floor is the one an admin
+// sets in Settings, checked against live settings in the route.
+export const InitializeContributionInput = z.object({
+  donorName: trimmed(2).max(120),
+  donorEmail: z.string().trim().toLowerCase().email(),
+  donorPhone: z.string().trim().max(40).optional().default(""),
+  amount: z.number().positive().max(1_000_000),
+  cause: z.string().trim().max(120).optional().default(""),
+  message: z.string().trim().max(1000).optional().default(""),
+  anonymous: z.boolean().optional().default(false),
+});
+
+export const UpdateContributionSettingsInput = z.object({
+  enabled: z.boolean().optional(),
+  currency: z.string().trim().length(3).toUpperCase().optional(),
+  minAmount: z.number().positive().max(1_000_000).optional(),
+  suggestedAmounts: z
+    .array(z.number().positive().max(1_000_000))
+    .max(8)
+    .optional(),
+  causes: z.array(z.string().trim().min(1).max(120)).max(12).optional(),
+});
+
 export const DuesWaiverInput = z.object({
   year: z.number().int().min(2020).max(2100),
   quarter: z.number().int().min(1).max(4),

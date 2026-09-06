@@ -3,6 +3,7 @@ import { getOrCreateSettings, SettingsModel } from "../models/Settings.js";
 import {
   UpdateMembershipFeeInput,
   DisableQuarterInput,
+  UpdateContributionSettingsInput,
 } from "../utils/validation.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/requireAdmin.js";
@@ -98,6 +99,37 @@ settingsRouter.post(
       s.updatedBy = req.user!.sub as unknown as typeof s.updatedBy;
       await s.save();
       res.json({ disabledDuesQuarters: s.disabledDuesQuarters });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Admin: configure public voluntary giving — open/closed, currency, the floor,
+// the suggested chips, and the causes a gift can be earmarked for.
+settingsRouter.patch(
+  "/contributions",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const input = UpdateContributionSettingsInput.parse(req.body);
+      const s = await getOrCreateSettings();
+      const c = s.contributions;
+      if (input.enabled !== undefined) c.enabled = input.enabled;
+      if (input.currency) c.currency = input.currency;
+      if (input.minAmount !== undefined) c.minAmount = input.minAmount;
+      if (input.suggestedAmounts) {
+        // Sorted and de-duplicated so the give page's chips read sensibly
+        // whatever order they were typed in.
+        c.suggestedAmounts = [...new Set(input.suggestedAmounts)].sort(
+          (a, b) => a - b
+        );
+      }
+      if (input.causes) c.causes = [...new Set(input.causes)];
+      s.updatedBy = req.user!.sub as unknown as typeof s.updatedBy;
+      await s.save();
+      res.json(s.contributions);
     } catch (err) {
       next(err);
     }

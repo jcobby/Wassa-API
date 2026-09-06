@@ -21,6 +21,36 @@ const DisabledQuarterSchema = new Schema(
   { _id: false }
 );
 
+// Voluntary contributions (donations). Open to anyone — member or not — so the
+// only real constraint is a floor that keeps Paystack from rejecting dust
+// amounts. Everything else here is presentation for the give page.
+const ContributionSettingsSchema = new Schema(
+  {
+    enabled: { type: Boolean, required: true, default: true },
+    currency: { type: String, required: true, default: "GHS" },
+    // A floor, not a price. Donors type whatever they wish above it.
+    minAmount: { type: Number, required: true, default: 1 },
+    // One-tap chips on the give page — a convenience, never a limit.
+    suggestedAmounts: {
+      type: [Number],
+      default: () => [50, 100, 200, 500, 1000],
+    },
+    // Designations a donor can earmark their gift for. The first entry is the
+    // default selection.
+    causes: {
+      type: [String],
+      default: () => [
+        "Where it's needed most",
+        "Education Fund",
+        "Health & Wellbeing",
+        "Youth & Mentorship",
+        "Community Projects",
+      ],
+    },
+  },
+  { _id: false }
+);
+
 const SettingsSchema = new Schema(
   {
     key: { type: String, required: true, unique: true, default: "global" },
@@ -37,6 +67,12 @@ const SettingsSchema = new Schema(
     },
     // Quarters where dues collection is disabled for everyone.
     disabledDuesQuarters: { type: [DisabledQuarterSchema], default: [] },
+    // Public, any-amount giving. Separate from fees and dues.
+    contributions: {
+      type: ContributionSettingsSchema,
+      required: true,
+      default: () => ({}),
+    },
     updatedBy: { type: Schema.Types.ObjectId, ref: "Member" },
   },
   { timestamps: true }

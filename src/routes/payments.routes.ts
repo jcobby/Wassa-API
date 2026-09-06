@@ -22,6 +22,10 @@ import {
 import crypto from "node:crypto";
 import { sendEmail } from "../email/client.js";
 import { welcomeEmail } from "../email/templates/welcome.js";
+import {
+  fulfillContribution,
+  CONTRIBUTION_REF_PREFIX,
+} from "./contributions.routes.js";
 import { config } from "../config.js";
 
 export const paymentsRouter = Router();
@@ -246,8 +250,15 @@ export const paystackWebhook: RequestHandler = async (req, res) => {
     ) as { event: string; data?: { reference?: string } };
 
     if (event.event === "charge.success" && event.data?.reference) {
+      const reference = event.data.reference;
       try {
-        await fulfillPayment(event.data.reference);
+        // One Paystack webhook URL serves both flows — the reference prefix
+        // says which ledger this transaction belongs to.
+        if (reference.startsWith(`${CONTRIBUTION_REF_PREFIX}_`)) {
+          await fulfillContribution(reference);
+        } else {
+          await fulfillPayment(reference);
+        }
       } catch (err) {
         console.error("[webhook] fulfill failed", err);
       }

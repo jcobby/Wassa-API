@@ -11,6 +11,7 @@ import { messagesRouter } from "./routes/messages.routes.js";
 import { duesRouter } from "./routes/dues.routes.js";
 import { settingsRouter } from "./routes/settings.routes.js";
 import { paymentsRouter, paystackWebhook } from "./routes/payments.routes.js";
+import { contributionsRouter } from "./routes/contributions.routes.js";
 
 async function main(): Promise<void> {
   await connectDB();
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
   app.use("/dues", duesRouter);
   app.use("/settings", settingsRouter);
   app.use("/payments", paymentsRouter);
+  app.use("/contributions", contributionsRouter);
 
   app.use(notFound);
   app.use(errorHandler);
