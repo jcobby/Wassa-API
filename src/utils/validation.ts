@@ -31,6 +31,9 @@ export const ApplicationInput = z.object({
   jobTitle: trimmed(),
   educationalBackground: z.array(z.string().trim()).min(1),
   workExperience: trimmed(),
+  // Required of every new applicant. Reviewers weigh a low figure against the
+  // narrative above it rather than it being an automatic bar.
+  yearsOfExperience: z.number().int().min(0).max(70),
   areasOfInterest: z.array(z.string().trim()).min(1),
 
   // Section E

@@ -9,19 +9,15 @@ import { HttpError } from "../middleware/error.js";
 import { COOKIE_NAME, verifyToken } from "../utils/jwt.js";
 import {
   initializeTransaction,
-  newReference,
   verifyTransaction,
   type VerifyResponse,
 } from "../payments/paystack.js";
+import { nextContributionReference } from "../utils/contributionReference.js";
 import { sendEmail } from "../email/client.js";
 import { contributionReceiptEmail } from "../email/templates/contributionReceipt.js";
 import { config } from "../config.js";
 
 export const contributionsRouter = Router();
-
-// References minted here carry this prefix so the shared Paystack webhook can
-// tell a contribution apart from a membership/dues payment.
-export const CONTRIBUTION_REF_PREFIX = "wpngive";
 
 // Giving is open to the whole internet, so cap how fast one network can start
 // transactions. Generous enough that a family giving from one office wifi is
@@ -92,7 +88,7 @@ contributionsRouter.post("/initialize", giveLimiter, async (req, res, next) => {
       }
     }
 
-    const reference = newReference(CONTRIBUTION_REF_PREFIX);
+    const reference = await nextContributionReference();
     const cause = input.cause || cfg.causes?.[0] || "";
     // Paystack appends ?reference=…&trxref=… itself — don't include it here.
     const callbackUrl = `${config.publicBaseUrl}/contribute/success`;
@@ -234,7 +230,8 @@ export type FulfillContributionResult = {
   cause?: string;
   reference?: string;
   alreadyFulfilled?: boolean;
-  paystack: VerifyResponse;
+  // Absent for a gift answered from our own already-reconciled record.
+  paystack?: VerifyResponse;
 };
 
 export async function fulfillContribution(
@@ -243,9 +240,10 @@ export async function fulfillContribution(
   const gift = await ContributionModel.findOne({ reference });
   if (!gift) throw new HttpError(404, "Contribution not found");
 
-  // Paystack is the source of truth — always re-check, never trust the caller.
-  const verify = await verifyTransaction(reference);
-
+  // Already banked and reconciled — answer from our own record. Re-asking
+  // Paystack tells us nothing new and adds a failure mode: a gateway blip, a
+  // rotated key, or a transaction aged out of the account would otherwise turn
+  // a confirmed donor's thank-you page into an error.
   if (gift.status === "success") {
     return {
       status: "success",
@@ -256,8 +254,21 @@ export async function fulfillContribution(
       cause: gift.cause,
       reference: gift.reference,
       alreadyFulfilled: true,
-      paystack: verify,
     };
+  }
+
+  // Not yet banked — Paystack is the source of truth, never the caller.
+  let verify: VerifyResponse;
+  try {
+    verify = await verifyTransaction(reference);
+  } catch (err) {
+    console.error("[contribution-verify] gateway error", reference, err);
+    throw new HttpError(
+      502,
+      "We couldn't reach the payment gateway to confirm this contribution. " +
+        "If you were charged, your gift is safe — refresh in a moment, or " +
+        "contact the Secretariat quoting your reference."
+    );
   }
 
   if (verify.status !== "success") {

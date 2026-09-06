@@ -59,6 +59,10 @@ const ApplicationSchema = new Schema(
     jobTitle: { type: String, required: true, trim: true },
     educationalBackground: { type: [String], default: [] },
     workExperience: { type: String, required: true, trim: true },
+    // Self-declared whole years of work experience. Null means the question was
+    // never put to them — applications submitted before it was asked must not
+    // be read as "0 years".
+    yearsOfExperience: { type: Number, default: null },
     areasOfInterest: { type: [String], default: [] },
 
     // Section E

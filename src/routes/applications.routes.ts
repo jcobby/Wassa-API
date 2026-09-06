@@ -426,6 +426,7 @@ type RawApp = {
   submittedAt?: Date;
   occupation?: string;
   countryOfResidence?: string;
+  yearsOfExperience?: number | null;
 };
 
 function formatList(app: RawApp) {
@@ -439,5 +440,8 @@ function formatList(app: RawApp) {
     submittedAt: app.submittedAt,
     occupation: app.occupation,
     countryOfResidence: app.countryOfResidence,
+    // `null` for applications submitted before the question existed — the
+    // admin table shows that as "Not stated", never as "0 years".
+    yearsOfExperience: app.yearsOfExperience ?? null,
   };
 }

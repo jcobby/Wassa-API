@@ -22,10 +22,8 @@ import {
 import crypto from "node:crypto";
 import { sendEmail } from "../email/client.js";
 import { welcomeEmail } from "../email/templates/welcome.js";
-import {
-  fulfillContribution,
-  CONTRIBUTION_REF_PREFIX,
-} from "./contributions.routes.js";
+import { fulfillContribution } from "./contributions.routes.js";
+import { isContributionReference } from "../utils/contributionReference.js";
 import { config } from "../config.js";
 
 export const paymentsRouter = Router();
@@ -254,7 +252,7 @@ export const paystackWebhook: RequestHandler = async (req, res) => {
       try {
         // One Paystack webhook URL serves both flows — the reference prefix
         // says which ledger this transaction belongs to.
-        if (reference.startsWith(`${CONTRIBUTION_REF_PREFIX}_`)) {
+        if (isContributionReference(reference)) {
           await fulfillContribution(reference);
         } else {
           await fulfillPayment(reference);

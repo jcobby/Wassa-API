@@ -72,7 +72,7 @@ export function contributionReceiptEmail({
                   <tr>
                     <td style="padding:0 24px 20px;">
                       <div style="font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:#6a7a70;">Receipt reference</div>
-                      <div style="margin-top:4px;font-size:13px;font-family:'SFMono-Regular',Consolas,Menlo,monospace;color:#0d2818;">${escape(reference)}</div>
+                      <div style="margin-top:4px;font-size:18px;font-weight:600;letter-spacing:2px;font-family:'SFMono-Regular',Consolas,Menlo,monospace;color:#0d2818;">${escape(reference)}</div>
                     </td>
                   </tr>
                 </table>
