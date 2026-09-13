@@ -11,6 +11,9 @@ export function currentQuarterOf(date = new Date()): number {
 //   waived  — an admin has waived it (member doesn't owe it)
 //   due     — this/a past quarter that is neither paid nor waived
 //   upcoming— a future quarter
+//
+// `payable` is separate from `due`: a future quarter isn't owed yet but can
+// still be settled in advance, so the page offers a "pay ahead" button.
 export async function memberDuesStatus(memberId: string, year: number) {
   const currentQuarter = currentQuarterOf();
   const settings = await getOrCreateSettings();
@@ -46,16 +49,17 @@ export async function memberDuesStatus(memberId: string, year: number) {
     currentQuarter,
     amount: settings.quarterlyDues.amount,
     currency: settings.quarterlyDues.currency,
-    quarters: [1, 2, 3, 4].map((q) => ({
-      quarter: q,
-      paid: paidQuarters.has(q),
-      waived: waived.has(q),
-      disabled: disabled.has(q),
-      due:
-        q <= currentQuarter &&
-        !paidQuarters.has(q) &&
-        !waived.has(q) &&
-        !disabled.has(q),
-    })),
+    quarters: [1, 2, 3, 4].map((q) => {
+      const settled = paidQuarters.has(q) || waived.has(q) || disabled.has(q);
+      return {
+        quarter: q,
+        paid: paidQuarters.has(q),
+        waived: waived.has(q),
+        disabled: disabled.has(q),
+        due: q <= currentQuarter && !settled,
+        // Anything not already settled can be paid, future quarters included.
+        payable: !settled,
+      };
+    }),
   };
 }

@@ -146,12 +146,14 @@ paymentsRouter.post("/dues/initialize", requireAuth, async (req, res, next) => {
     const { year, quarter } = InitializeDuesInput.parse(req.body);
     const now = new Date();
     const currentYear = now.getFullYear();
-    const currentQuarter = Math.floor(now.getMonth() / 3) + 1;
-    // Only the current or a past-due quarter of the current year.
-    if (year !== currentYear || quarter > currentQuarter) {
+    // Any quarter of the current year — members may settle overdue quarters or
+    // pay the rest of the year ahead. Other years stay closed: dues are set
+    // annually by the General Assembly (Article 6.6.2), so next year's rate
+    // isn't known yet and paying at this year's rate would under-collect.
+    if (year !== currentYear) {
       throw new HttpError(
         400,
-        "You can only pay dues for the current or a past-due quarter."
+        `You can only pay dues for ${currentYear} at the moment.`
       );
     }
 
