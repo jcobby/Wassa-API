@@ -26,6 +26,10 @@ const PaymentSchema = new Schema(
     year: { type: Number, required: true, index: true },
     // Calendar quarter (1-4) for dues_renewal payments; null for membership_initial.
     quarter: { type: Number, default: null, index: true },
+    // Set when several quarters were paid in one "pay all remaining" checkout.
+    // Paystack only knows this shared reference; each quarter's row still has
+    // its own unique `reference` so per-quarter status checks work unchanged.
+    batchReference: { type: String, default: null, index: true },
     paystackData: { type: Schema.Types.Mixed, default: null },
     completedAt: { type: Date, default: null },
   },

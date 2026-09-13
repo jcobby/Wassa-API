@@ -127,13 +127,19 @@ paymentsRouter.post("/initialize", async (req, res, next) => {
   }
 });
 
-// Auth: the signed-in member's quarterly dues status for the current year.
+// Auth: the signed-in member's quarterly dues status. Defaults to the current
+// year; `?year=` may also ask for next year, the furthest dues can be paid ahead.
 paymentsRouter.get("/dues/status", requireAuth, async (req, res, next) => {
   try {
-    const status = await memberDuesStatus(
-      String(req.user!.sub),
-      new Date().getFullYear()
-    );
+    const currentYear = new Date().getFullYear();
+    const year = req.query.year ? Number(req.query.year) : currentYear;
+    if (year !== currentYear && year !== currentYear + 1) {
+      throw new HttpError(
+        400,
+        `Dues status is available for ${currentYear} and ${currentYear + 1} only.`
+      );
+    }
+    const status = await memberDuesStatus(String(req.user!.sub), year);
     res.json(status);
   } catch (err) {
     next(err);
@@ -146,14 +152,12 @@ paymentsRouter.post("/dues/initialize", requireAuth, async (req, res, next) => {
     const { year, quarter } = InitializeDuesInput.parse(req.body);
     const now = new Date();
     const currentYear = now.getFullYear();
-    // Any quarter of the current year — members may settle overdue quarters or
-    // pay the rest of the year ahead. Other years stay closed: dues are set
-    // annually by the General Assembly (Article 6.6.2), so next year's rate
-    // isn't known yet and paying at this year's rate would under-collect.
-    if (year !== currentYear) {
+    // Any quarter of this year (overdue or ahead) and any quarter of next year.
+    // Advance payments are charged at the quarterly rate in force when paid.
+    if (year !== currentYear && year !== currentYear + 1) {
       throw new HttpError(
         400,
-        `You can only pay dues for ${currentYear} at the moment.`
+        `You can pay dues for ${currentYear} and ${currentYear + 1} only.`
       );
     }
 
@@ -223,6 +227,84 @@ paymentsRouter.post("/dues/initialize", requireAuth, async (req, res, next) => {
     next(err);
   }
 });
+
+// Auth: one Paystack checkout for every unsettled quarter from the start of
+// this year to the end of next year — overdue and advance quarters alike.
+paymentsRouter.post(
+  "/dues/initialize-all",
+  requireAuth,
+  async (req, res, next) => {
+    try {
+      const member = await MemberModel.findById(req.user!.sub);
+      if (!member) throw new HttpError(404, "Member not found");
+      if (member.status !== "active") {
+        throw new HttpError(403, "Your account is not active");
+      }
+
+      // The server works out what's left to pay — never trust the browser's
+      // list. Same rules as a single quarter: paid, waived, and turned-off
+      // quarters are skipped.
+      const currentYear = new Date().getFullYear();
+      const periods: { year: number; quarter: number }[] = [];
+      for (const year of [currentYear, currentYear + 1]) {
+        const status = await memberDuesStatus(String(member._id), year);
+        for (const q of status.quarters) {
+          if (q.payable) periods.push({ year, quarter: q.quarter });
+        }
+      }
+      if (periods.length === 0) {
+        throw new HttpError(409, "You have no dues left to pay.");
+      }
+
+      const settings = await getOrCreateSettings();
+      const perQuarter = settings.quarterlyDues.amount;
+      const currency = settings.quarterlyDues.currency;
+      // Summed in pesewas so quarters × rate can't pick up float dust.
+      const total = (Math.round(perQuarter * 100) * periods.length) / 100;
+
+      const batchReference = newReference("wpndues");
+      const callbackUrl = `${config.publicBaseUrl}/dashboard/dues`;
+
+      const paystackData = await initializeTransaction({
+        email: member.email,
+        amount: total,
+        currency,
+        reference: batchReference,
+        callbackUrl,
+        metadata: {
+          memberId: String(member._id),
+          purpose: "dues_renewal",
+          periods,
+        },
+      });
+
+      // One ledger row per quarter, all tied to the single checkout.
+      await PaymentModel.insertMany(
+        periods.map((p) => ({
+          memberId: member._id,
+          reference: `${batchReference}-${p.year}Q${p.quarter}`,
+          batchReference,
+          amount: perQuarter,
+          currency,
+          status: "initialized",
+          purpose: "dues_renewal",
+          year: p.year,
+          quarter: p.quarter,
+        }))
+      );
+
+      res.json({
+        authorizationUrl: paystackData.authorization_url,
+        reference: paystackData.reference,
+        quarters: periods.length,
+        amount: total,
+        currency,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 // Public: verify a payment (used as the fallback by the success page when
 // the webhook hasn't fired — and as the primary path in local dev).
@@ -349,9 +431,61 @@ type FulfillResult = {
   paystack: VerifyResponse;
 };
 
+// Fulfil a "pay all remaining" checkout: one Paystack transaction covering
+// several quarter rows that share `batchReference`. Idempotent like the rest.
+async function fulfillDuesBatch(reference: string): Promise<FulfillResult> {
+  const batch = await PaymentModel.find({ batchReference: reference });
+  const memberId = String(batch[0].memberId);
+
+  const verify = await verifyTransaction(reference);
+
+  if (batch.every((p) => p.status === "success")) {
+    return { status: "success", memberId, alreadyFulfilled: true, paystack: verify };
+  }
+
+  if (verify.status !== "success") {
+    await PaymentModel.updateMany(
+      { batchReference: reference, status: { $ne: "success" } },
+      {
+        $set: {
+          status: verify.status === "failed" ? "failed" : "initialized",
+          paystackData: verify,
+        },
+      }
+    );
+    return {
+      status: verify.status === "failed" ? "failed" : "pending",
+      paystack: verify,
+    };
+  }
+
+  // Only bank the quarters if Paystack collected at least their combined dues.
+  // (At least, not exactly: charges passed on to the payer can sit on top.)
+  const expected = batch.reduce((sum, p) => sum + Math.round(p.amount * 100), 0);
+  if (verify.amount < expected) {
+    console.error("[dues-batch] amount short", reference, verify.amount, expected);
+    throw new HttpError(
+      409,
+      "The amount paid doesn't cover the selected dues. Please contact the Secretariat."
+    );
+  }
+
+  await PaymentModel.updateMany(
+    { batchReference: reference, status: { $ne: "success" } },
+    { $set: { status: "success", completedAt: new Date(), paystackData: verify } }
+  );
+  return { status: "success", memberId, paystack: verify };
+}
+
 async function fulfillPayment(reference: string): Promise<FulfillResult> {
   const payment = await PaymentModel.findOne({ reference });
-  if (!payment) throw new HttpError(404, "Payment not found");
+  if (!payment) {
+    // Paystack only knows a multi-quarter checkout by its shared reference.
+    if (await PaymentModel.exists({ batchReference: reference })) {
+      return fulfillDuesBatch(reference);
+    }
+    throw new HttpError(404, "Payment not found");
+  }
 
   // Always verify with Paystack as source of truth
   const verify = await verifyTransaction(reference);
