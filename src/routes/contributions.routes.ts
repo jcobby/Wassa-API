@@ -1,5 +1,7 @@
 import { Router } from "express";
+import { Types } from "mongoose";
 import { ContributionModel } from "../models/Contribution.js";
+import { MemberModel } from "../models/Member.js";
 import { getOrCreateSettings } from "../models/Settings.js";
 import { InitializeContributionInput } from "../utils/validation.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -15,6 +17,7 @@ import {
 import { nextContributionReference } from "../utils/contributionReference.js";
 import { sendEmail } from "../email/client.js";
 import { contributionReceiptEmail } from "../email/templates/contributionReceipt.js";
+import { contributionView, memberContact } from "../utils/transactions.js";
 import { config } from "../config.js";
 
 export const contributionsRouter = Router();
@@ -145,10 +148,11 @@ contributionsRouter.get("/verify/:reference", async (req, res, next) => {
   }
 });
 
-// Admin: ledger of contributions.
+// Admin: ledger of contributions, optionally searched by donor or reference.
 contributionsRouter.get("/", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const status = (req.query.status as string) || undefined;
+    const search = (req.query.search as string)?.trim();
     const filter: Record<string, unknown> = {};
     if (
       status &&
@@ -156,28 +160,15 @@ contributionsRouter.get("/", requireAuth, requireAdmin, async (req, res, next) =
     ) {
       filter.status = status;
     }
+    if (search) {
+      const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      filter.$or = [{ donorName: rx }, { donorEmail: rx }, { reference: rx }];
+    }
     const list = await ContributionModel.find(filter)
       .sort({ createdAt: -1 })
       .limit(200)
       .lean();
-    res.json(
-      list.map((c) => ({
-        id: String(c._id),
-        donorName: c.donorName,
-        donorEmail: c.donorEmail,
-        donorPhone: c.donorPhone,
-        anonymous: c.anonymous,
-        amount: c.amount,
-        currency: c.currency,
-        cause: c.cause,
-        message: c.message,
-        memberId: c.memberId ? String(c.memberId) : null,
-        reference: c.reference,
-        status: c.status,
-        createdAt: c.createdAt,
-        completedAt: c.completedAt,
-      }))
-    );
+    res.json(list.map(contributionView));
   } catch (err) {
     next(err);
   }
@@ -209,6 +200,34 @@ contributionsRouter.get(
         raisedThisYear: thisYear[0]?.total ?? 0,
         donors: donorCount.length,
         pending,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Admin: one contribution in full, for the console's receipt page. Registered
+// after /options and /stats so those paths aren't read as ids.
+contributionsRouter.get(
+  "/:id",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      if (!Types.ObjectId.isValid(req.params.id)) {
+        throw new HttpError(404, "Contribution not found");
+      }
+      const c = await ContributionModel.findById(req.params.id).lean();
+      if (!c) throw new HttpError(404, "Contribution not found");
+      const member = c.memberId
+        ? await MemberModel.findById(c.memberId)
+            .select("fullName email applicantId mobileNumbers countryOfResidence")
+            .lean()
+        : null;
+      res.json({
+        ...contributionView(c),
+        member: member ? memberContact(member) : null,
       });
     } catch (err) {
       next(err);

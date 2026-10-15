@@ -1,5 +1,6 @@
 import { Router, type RequestHandler } from "express";
 import express from "express";
+import { Types } from "mongoose";
 import { MemberModel } from "../models/Member.js";
 import { PaymentModel } from "../models/Payment.js";
 import { DuesModel } from "../models/Dues.js";
@@ -24,6 +25,7 @@ import { sendEmail } from "../email/client.js";
 import { welcomeEmail } from "../email/templates/welcome.js";
 import { fulfillContribution } from "./contributions.routes.js";
 import { isContributionReference } from "../utils/contributionReference.js";
+import { memberContact, paymentView } from "../utils/transactions.js";
 import { config } from "../config.js";
 
 export const paymentsRouter = Router();
@@ -352,10 +354,12 @@ export const paystackWebhook: RequestHandler = async (req, res) => {
   }
 };
 
-// Admin: list payments
+// Admin: list payments, optionally searched by member name / email / WPN ID or
+// by transaction reference.
 paymentsRouter.get("/", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const status = (req.query.status as string) || undefined;
+    const search = (req.query.search as string)?.trim();
     const filter: Record<string, unknown> = {};
     if (
       status &&
@@ -363,31 +367,40 @@ paymentsRouter.get("/", requireAuth, requireAdmin, async (req, res, next) => {
     ) {
       filter.status = status;
     }
+    if (search) {
+      const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+      const memberIds = await MemberModel.find({
+        $or: [{ fullName: rx }, { email: rx }, { applicantId: rx }],
+      }).distinct("_id");
+      filter.$or = [
+        { reference: rx },
+        { batchReference: rx },
+        { memberId: { $in: memberIds } },
+      ];
+    }
     const list = await PaymentModel.find(filter)
       .sort({ createdAt: -1 })
       .limit(200)
       .populate<{
-        memberId: { _id: unknown; fullName: string; email: string };
-      }>("memberId", "fullName email")
+        memberId: {
+          _id: unknown;
+          fullName: string;
+          email: string;
+          applicantId?: string | null;
+        };
+      }>("memberId", "fullName email applicantId")
       .lean();
     res.json(
       list.map((p) => ({
-        id: String(p._id),
+        ...paymentView(p),
         member: p.memberId
           ? {
               id: String(p.memberId._id),
               fullName: p.memberId.fullName,
               email: p.memberId.email,
+              applicantId: p.memberId.applicantId ?? null,
             }
           : null,
-        reference: p.reference,
-        amount: p.amount,
-        currency: p.currency,
-        status: p.status,
-        purpose: p.purpose,
-        year: p.year,
-        createdAt: p.createdAt,
-        completedAt: p.completedAt,
       }))
     );
   } catch (err) {
@@ -413,6 +426,53 @@ paymentsRouter.get(
     }
   }
 );
+
+// Admin: one payment in full — what the console's receipt page explains.
+// Registered after /stats so that path isn't read as an id.
+paymentsRouter.get("/:id", requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    if (!Types.ObjectId.isValid(req.params.id)) {
+      throw new HttpError(404, "Payment not found");
+    }
+    const p = await PaymentModel.findById(req.params.id)
+      .populate<{
+        memberId: {
+          _id: unknown;
+          fullName: string;
+          email: string;
+          applicantId?: string | null;
+          mobileNumbers?: string;
+          countryOfResidence?: string;
+        };
+      }>(
+        "memberId",
+        "fullName email applicantId mobileNumbers countryOfResidence"
+      )
+      .lean();
+    if (!p) throw new HttpError(404, "Payment not found");
+
+    // Every quarter bought in the same "pay all" checkout, so the receipt can
+    // say what the whole charge covered.
+    const batch = p.batchReference
+      ? await PaymentModel.find({ batchReference: p.batchReference })
+          .sort({ year: 1, quarter: 1 })
+          .lean()
+      : [];
+    const gatewayResponse = (
+      p.paystackData as { gateway_response?: unknown } | null
+    )?.gateway_response;
+
+    res.json({
+      ...paymentView(p),
+      member: p.memberId ? memberContact(p.memberId) : null,
+      gatewayResponse:
+        typeof gatewayResponse === "string" ? gatewayResponse : null,
+      batch: batch.map(paymentView),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // -----------------------------------------------------------------------
 // Core fulfillment — idempotent. Called by both the verify endpoint and

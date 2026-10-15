@@ -1,6 +1,9 @@
 import { Router } from "express";
 import crypto from "node:crypto";
 import { MemberModel } from "../models/Member.js";
+import { PaymentModel } from "../models/Payment.js";
+import { ContributionModel } from "../models/Contribution.js";
+import { DuesModel } from "../models/Dues.js";
 import { getOrCreateSettings } from "../models/Settings.js";
 import { memberDuesStatus } from "../utils/dues.js";
 import { DuesWaiverInput } from "../utils/validation.js";
@@ -12,6 +15,11 @@ import { approvalEmail } from "../email/templates/approval.js";
 import { welcomeEmail } from "../email/templates/welcome.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 import { nextApplicantId } from "../utils/applicantId.js";
+import {
+  contributionView,
+  memberContact,
+  paymentView,
+} from "../utils/transactions.js";
 import { config } from "../config.js";
 
 const TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
@@ -124,6 +132,57 @@ membersRouter.get(
       const exists = await MemberModel.exists({ _id: req.params.id });
       if (!exists) throw new HttpError(404, "Member not found");
       res.json(await memberDuesStatus(req.params.id, new Date().getFullYear()));
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Admin: everything a member has paid or given — Paystack payments, voluntary
+// contributions, and payments an admin recorded by hand — for their statement.
+membersRouter.get(
+  "/:id/transactions",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const m = await MemberModel.findById(req.params.id)
+        .select("fullName email applicantId mobileNumbers countryOfResidence")
+        .lean();
+      if (!m) throw new HttpError(404, "Member not found");
+
+      const [payments, contributions, dues] = await Promise.all([
+        PaymentModel.find({ memberId: m._id }).sort({ createdAt: -1 }).lean(),
+        // Gifts made while signed out still carry the member's email.
+        ContributionModel.find({
+          $or: [{ memberId: m._id }, { donorEmail: m.email }],
+        })
+          .sort({ createdAt: -1 })
+          .lean(),
+        DuesModel.find({ memberId: m._id, paid: true }).sort({ year: -1 }).lean(),
+      ]);
+
+      // Paystack fulfilment also writes a Dues record carrying the payment's
+      // reference. Only the others were entered by hand (cash, bank, …).
+      const paystackRefs = new Set(payments.map((p) => p.reference));
+      const manual = dues
+        .filter((d) => !d.reference || !paystackRefs.has(d.reference))
+        .map((d) => ({
+          id: String(d._id),
+          year: d.year,
+          amount: d.amountPaid ?? 0,
+          method: d.method ?? "",
+          reference: d.reference ?? "",
+          notes: d.notes ?? "",
+          paidAt: d.paidAt ?? null,
+        }));
+
+      res.json({
+        member: memberContact(m),
+        payments: payments.map(paymentView),
+        contributions: contributions.map(contributionView),
+        manual,
+      });
     } catch (err) {
       next(err);
     }

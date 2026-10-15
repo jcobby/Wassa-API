@@ -9,6 +9,26 @@ const NextOfKinSchema = new Schema(
   { _id: false }
 );
 
+// One entry per review decision, oldest first. Corrections are logged too, so
+// a reversed approval or rejection always leaves a full audit trail.
+const DecisionSchema = new Schema(
+  {
+    action: {
+      type: String,
+      required: true,
+      enum: ["approved", "rejected", "reopened"],
+    },
+    at: { type: Date, default: () => new Date() },
+    by: { type: Schema.Types.ObjectId, ref: "Member", default: null },
+    // Copied so the log still reads correctly if the admin is later removed.
+    byName: { type: String, default: "" },
+    notes: { type: String, trim: true, default: "" },
+    // True when this entry overturned an earlier decision.
+    correction: { type: Boolean, default: false },
+  },
+  { _id: false }
+);
+
 const ApplicationSchema = new Schema(
   {
     // Public-facing WPN identity code, e.g. "WPN-7K3M9Q". Null until the
@@ -89,6 +109,7 @@ const ApplicationSchema = new Schema(
     reviewedAt: { type: Date },
     reviewedBy: { type: Schema.Types.ObjectId, ref: "Member" },
     reviewNotes: { type: String, trim: true, default: "" },
+    decisionHistory: { type: [DecisionSchema], default: [] },
   },
   { timestamps: true }
 );

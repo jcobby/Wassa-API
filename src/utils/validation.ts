@@ -71,8 +71,25 @@ export const ContactInput = z.object({
   message: trimmed(5),
 });
 
+// An admin's email reply to a contact-form message. A blank subject falls back
+// to a standard "Re:" line in the route.
+export const ContactReplyInput = z.object({
+  subject: z.string().trim().max(200).optional().default(""),
+  message: trimmed(2).max(10_000),
+});
+
 export const ReviewInput = z.object({
   notes: z.string().trim().optional().default(""),
+  // Only consulted when the decision overturns an earlier approval: whether to
+  // tell the applicant the payment link they were emailed is withdrawn.
+  notifyApplicant: z.boolean().optional().default(true),
+});
+
+// Sending a decided application back to the review queue. Always a
+// correction, so a reason is required for the record.
+export const ReopenInput = z.object({
+  notes: trimmed(3).max(2000),
+  notifyApplicant: z.boolean().optional().default(true),
 });
 
 export const RecordPaymentInput = z.object({

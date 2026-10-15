@@ -1,9 +1,12 @@
 import { Router } from "express";
 import crypto from "node:crypto";
+import { Types } from "mongoose";
 import { ApplicationModel } from "../models/Application.js";
 import { MemberModel } from "../models/Member.js";
+import { PaymentModel } from "../models/Payment.js";
 import {
   ApplicationInput,
+  ReopenInput,
   ReviewInput,
   VerifyEmailInput,
 } from "../utils/validation.js";
@@ -13,9 +16,11 @@ import { HttpError } from "../middleware/error.js";
 import { getOrCreateSettings } from "../models/Settings.js";
 import { sendEmail } from "../email/client.js";
 import { approvalEmail } from "../email/templates/approval.js";
+import { approvalWithdrawnEmail } from "../email/templates/approvalWithdrawn.js";
 import { verifyEmailTemplate } from "../email/templates/verifyEmail.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 import { nextApplicantId } from "../utils/applicantId.js";
+import { verifyTransaction } from "../payments/paystack.js";
 import { config } from "../config.js";
 
 export const applicationsRouter = Router();
@@ -33,6 +38,146 @@ const adminResendLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 });
 // Never-confirmed applications are auto-deleted this long after they're created
 // (or after a confirmation link is re-sent). Cleared the instant they confirm.
 const UNCONFIRMED_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
+const CORRECTION_REASON_REQUIRED =
+  "Give a reason for changing the decision — it's kept on the record.";
+
+type AppDoc = InstanceType<typeof ApplicationModel>;
+
+// The member record an approval created for this application, if any. Matched
+// by provenance first; the email fallback covers records made before that link
+// was stored, but never claims a member admitted through another application.
+async function approvedMemberFor(app: { _id: unknown; email: string }) {
+  return (
+    (await MemberModel.findOne({ applicationId: app._id })) ??
+    (await MemberModel.findOne({
+      email: app.email,
+      role: "member",
+      applicationId: null,
+    }))
+  );
+}
+
+async function adminName(id: string): Promise<string> {
+  const m = await MemberModel.findById(id).select("fullName").lean();
+  return m?.fullName ?? "";
+}
+
+// Decisions made before the log existed live only in reviewedAt/reviewNotes.
+// Copy that in before logging anything new, so a correction's trail starts at
+// the original decision rather than at the fix.
+function seedHistory(app: AppDoc): void {
+  if (app.decisionHistory.length > 0 || app.status === "pending") return;
+  app.decisionHistory.push({
+    action: app.status,
+    at: app.reviewedAt ?? app.updatedAt,
+    by: app.reviewedBy ?? null,
+    byName: "",
+    notes: app.reviewNotes ?? "",
+    correction: false,
+  });
+}
+
+// A rejected applicant may have applied again since. Reviving the old
+// application next to the new one would leave two live applications for one
+// person, so point the admin at the newer one instead.
+async function assertNoNewerApplication(app: AppDoc): Promise<void> {
+  const newer = await ApplicationModel.exists({
+    _id: { $ne: app._id },
+    email: app.email,
+    status: { $in: ["pending", "approved"] },
+  });
+  if (newer) {
+    throw new HttpError(
+      409,
+      "This applicant has applied again since this decision. Review their newer application instead."
+    );
+  }
+}
+
+// Undo what approving `app` set in motion, so the decision can be corrected.
+// Approval created a member record awaiting payment and emailed a payment link;
+// deleting that record cancels the link. Allowed only while no money has
+// changed hands: once the fee is paid they are a member, and undoing that is a
+// refund plus a suspension, not a silent delete.
+async function revokeApproval(app: AppDoc): Promise<void> {
+  const member = await approvedMemberFor(app);
+  if (!member) return; // never created, or already removed by hand
+
+  const alreadyPaid =
+    "This applicant has already paid the membership fee, so the approval can no longer be reversed here. Suspend them from their member page and arrange any refund with the Treasurer.";
+  if (member.role !== "member" || member.status !== "pending_payment") {
+    throw new HttpError(409, alreadyPaid);
+  }
+  if (await PaymentModel.exists({ memberId: member._id, status: "success" })) {
+    throw new HttpError(409, alreadyPaid);
+  }
+
+  // A checkout they opened may have been paid moments ago, with Paystack's
+  // webhook still on its way (or a MoMo prompt still awaiting approval). Ask
+  // Paystack before deleting anything.
+  const open = await PaymentModel.find({
+    memberId: member._id,
+    status: "initialized",
+  });
+  for (const p of open) {
+    let status: string;
+    try {
+      status = (await verifyTransaction(p.reference)).status;
+    } catch (err) {
+      console.error("[revoke-approval] verify failed", p.reference, err);
+      throw new HttpError(
+        502,
+        "We couldn't confirm with Paystack that no payment is in progress for this applicant. Please try again in a moment."
+      );
+    }
+    if (status === "success") {
+      throw new HttpError(
+        409,
+        "A payment from this applicant has just come through, so their membership is now active and can't be reversed here. Refresh the page to see it."
+      );
+    }
+    if (status !== "abandoned" && status !== "failed") {
+      throw new HttpError(
+        409,
+        "This applicant has a payment in progress right now. Wait a few minutes for it to finish or fail, then try again."
+      );
+    }
+  }
+
+  // Keep the unfinished checkouts in the ledger; only the member record goes.
+  if (open.length) {
+    await PaymentModel.updateMany(
+      { _id: { $in: open.map((p) => p._id) } },
+      { $set: { status: "abandoned" } }
+    );
+  }
+  await member.deleteOne();
+}
+
+// Tell an applicant their approval was withdrawn. Never fails the request —
+// the decision is already saved; the admin is told if the email didn't go.
+async function notifyWithdrawal(
+  app: AppDoc,
+  outcome: "rejected" | "under_review"
+): Promise<{ sent: boolean; error?: string }> {
+  try {
+    const tpl = approvalWithdrawnEmail({ fullName: app.fullName, outcome });
+    await sendEmail({
+      to: app.email,
+      subject: tpl.subject,
+      html: tpl.html,
+      text: tpl.text,
+    });
+    return { sent: true };
+  } catch (err) {
+    console.error("[approval-withdrawn-email] failed", err);
+    return {
+      sent: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
 
 // Public: submit a new application
 applicationsRouter.post("/", submitLimiter, async (req, res, next) => {
@@ -263,7 +408,15 @@ applicationsRouter.get(
     try {
       const app = await ApplicationModel.findById(req.params.id).lean();
       if (!app) throw new HttpError(404, "Application not found");
-      res.json(app);
+      // For an approved application, the member record it created — the
+      // console offers to reverse an approval only while that member hasn't
+      // paid yet.
+      let linkedMember: { id: string; status: string } | null = null;
+      if (app.status === "approved") {
+        const m = await approvedMemberFor(app);
+        if (m) linkedMember = { id: String(m._id), status: m.status };
+      }
+      res.json({ ...app, linkedMember });
     } catch (err) {
       next(err);
     }
@@ -282,6 +435,12 @@ applicationsRouter.patch(
       if (!app) throw new HttpError(404, "Application not found");
       if (app.status === "approved") {
         throw new HttpError(400, "Application already approved");
+      }
+      // Approving a rejected application overturns that decision.
+      const correcting = app.status === "rejected";
+      if (correcting) {
+        if (!notes) throw new HttpError(400, CORRECTION_REASON_REQUIRED);
+        await assertNoNewerApplication(app);
       }
       if (!app.emailVerified) {
         throw new HttpError(
@@ -342,11 +501,21 @@ applicationsRouter.patch(
         applicationId: app._id,
       });
 
+      const byName = await adminName(req.user!.sub);
+      seedHistory(app);
       app.status = "approved";
       app.reviewedAt = new Date();
       app.reviewedBy = req.user!.sub as unknown as typeof app.reviewedBy;
       app.reviewNotes = notes;
       app.cleanupAt = null;
+      app.decisionHistory.push({
+        action: "approved",
+        at: app.reviewedAt,
+        by: new Types.ObjectId(req.user!.sub),
+        byName,
+        notes,
+        correction: correcting,
+      });
       await app.save();
 
       // Send approval email with payment link
@@ -397,19 +566,98 @@ applicationsRouter.patch(
   requireAdmin,
   async (req, res, next) => {
     try {
-      const { notes } = ReviewInput.parse(req.body ?? {});
+      const { notes, notifyApplicant } = ReviewInput.parse(req.body ?? {});
       const app = await ApplicationModel.findById(req.params.id);
       if (!app) throw new HttpError(404, "Application not found");
       if (app.status === "rejected") {
         throw new HttpError(400, "Application already rejected");
       }
+      // Rejecting an approved application overturns that decision — and must
+      // first cancel the member record and payment link approval created.
+      const correcting = app.status === "approved";
+      if (correcting) {
+        if (!notes) throw new HttpError(400, CORRECTION_REASON_REQUIRED);
+        await revokeApproval(app);
+      }
+
+      const byName = await adminName(req.user!.sub);
+      seedHistory(app);
       app.status = "rejected";
       app.reviewedAt = new Date();
       app.reviewedBy = req.user!.sub as unknown as typeof app.reviewedBy;
       app.reviewNotes = notes;
       app.cleanupAt = null;
+      app.decisionHistory.push({
+        action: "rejected",
+        at: app.reviewedAt,
+        by: new Types.ObjectId(req.user!.sub),
+        byName,
+        notes,
+        correction: correcting,
+      });
       await app.save();
-      res.json({ id: String(app._id), status: app.status });
+
+      const notice =
+        correcting && notifyApplicant
+          ? await notifyWithdrawal(app, "rejected")
+          : null;
+      res.json({
+        id: String(app._id),
+        status: app.status,
+        notified: notice?.sent ?? false,
+        notifyError: notice?.error,
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Admin: send a decided application back to the review queue — the way to
+// correct a decision made in error when the right outcome needs fresh review.
+// Undoes an approval's side effects first.
+applicationsRouter.patch(
+  "/:id/reopen",
+  requireAuth,
+  requireAdmin,
+  async (req, res, next) => {
+    try {
+      const { notes, notifyApplicant } = ReopenInput.parse(req.body ?? {});
+      const app = await ApplicationModel.findById(req.params.id);
+      if (!app) throw new HttpError(404, "Application not found");
+      if (app.status === "pending") {
+        throw new HttpError(400, "This application is already awaiting review.");
+      }
+      const wasApproved = app.status === "approved";
+      if (wasApproved) await revokeApproval(app);
+      else await assertNoNewerApplication(app);
+
+      const byName = await adminName(req.user!.sub);
+      seedHistory(app);
+      app.status = "pending";
+      app.reviewedAt = undefined;
+      app.reviewedBy = undefined;
+      app.reviewNotes = "";
+      app.decisionHistory.push({
+        action: "reopened",
+        at: new Date(),
+        by: new Types.ObjectId(req.user!.sub),
+        byName,
+        notes,
+        correction: true,
+      });
+      await app.save();
+
+      const notice =
+        wasApproved && notifyApplicant
+          ? await notifyWithdrawal(app, "under_review")
+          : null;
+      res.json({
+        id: String(app._id),
+        status: app.status,
+        notified: notice?.sent ?? false,
+        notifyError: notice?.error,
+      });
     } catch (err) {
       next(err);
     }
