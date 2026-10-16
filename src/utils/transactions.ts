@@ -1,10 +1,26 @@
 // Shapes ledger records for the admin console's receipts and statements.
-// `channel` is how the money moved as Paystack reports it (mobile_money, card,
-// bank, bank_transfer, ussd, …) — null until a transaction has been verified.
+// `channel` is how the money moved: as Paystack reports it (mobile_money, card,
+// bank, bank_transfer, ussd, …), or the method an admin entered for a payment
+// they recorded by hand — null until a Paystack transaction is verified.
 
 function channelOf(paystackData: unknown): string | null {
   const channel = (paystackData as { channel?: unknown } | null)?.channel;
   return typeof channel === "string" && channel ? channel : null;
+}
+
+const CHANNELS: Record<string, string> = {
+  mobile_money: "Mobile money",
+  card: "Card",
+  bank: "Bank account",
+  bank_transfer: "Bank transfer",
+  ussd: "USSD",
+  qr: "QR code",
+};
+
+// Paystack's channel code in words, for emails.
+export function channelLabel(channel: string | null | undefined): string | null {
+  if (!channel) return null;
+  return CHANNELS[channel] ?? channel.replace(/_/g, " ");
 }
 
 type RawPayment = {
@@ -18,6 +34,9 @@ type RawPayment = {
   year: number;
   quarter?: number | null;
   paystackData?: unknown;
+  recordedBy?: unknown;
+  method?: string | null;
+  externalReference?: string | null;
   createdAt?: Date;
   completedAt?: Date | null;
 };
@@ -33,7 +52,10 @@ export function paymentView(p: RawPayment) {
     purpose: p.purpose,
     year: p.year,
     quarter: p.quarter ?? null,
-    channel: channelOf(p.paystackData),
+    channel: channelOf(p.paystackData) ?? (p.method || null),
+    // Recorded by an admin rather than paid through Paystack.
+    manual: Boolean(p.recordedBy),
+    externalReference: p.externalReference ?? "",
     createdAt: p.createdAt ?? null,
     completedAt: p.completedAt ?? null,
   };

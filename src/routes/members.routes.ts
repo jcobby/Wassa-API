@@ -1,32 +1,81 @@
 import { Router } from "express";
-import crypto from "node:crypto";
 import { MemberModel } from "../models/Member.js";
 import { PaymentModel } from "../models/Payment.js";
 import { ContributionModel } from "../models/Contribution.js";
 import { DuesModel } from "../models/Dues.js";
-import { getOrCreateSettings } from "../models/Settings.js";
 import { memberDuesStatus } from "../utils/dues.js";
 import { DuesWaiverInput } from "../utils/validation.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/requireAdmin.js";
 import { HttpError } from "../middleware/error.js";
-import { sendEmail } from "../email/client.js";
-import { approvalEmail } from "../email/templates/approval.js";
-import { welcomeEmail } from "../email/templates/welcome.js";
 import { rateLimit } from "../middleware/rateLimit.js";
-import { nextApplicantId } from "../utils/applicantId.js";
+import { sendPaymentLink, sendSetPasswordLink } from "../utils/onboarding.js";
 import {
   contributionView,
   memberContact,
   paymentView,
 } from "../utils/transactions.js";
-import { config } from "../config.js";
-
-const TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 
 export const membersRouter = Router();
 
 const resendLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 });
+// Emails everyone awaiting payment at once — a guard against double clicks (or
+// two admins at once) turning into a flood of identical emails. One shared
+// bucket, not per IP, and it sits after the admin check so outsiders can't use
+// it up.
+const bulkResendLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  keyGenerator: () => "bulk-payment-links",
+  message:
+    "Payment links have already been sent several times this hour. Please wait before sending again.",
+});
+
+// Everything a member has paid or given — Paystack payments, dues an admin
+// recorded by hand, voluntary contributions, and yearly records from before
+// quarterly dues. `paidOnly` keeps just money received, for the member's own
+// view; the admin statement can also show unfinished checkouts.
+async function loadTransactions(memberId: string, paidOnly: boolean) {
+  const m = await MemberModel.findById(memberId)
+    .select("fullName email applicantId")
+    .lean();
+  if (!m) throw new HttpError(404, "Member not found");
+
+  const paid = paidOnly ? { status: "success" } : {};
+  const [payments, contributions, dues] = await Promise.all([
+    PaymentModel.find({ memberId: m._id, ...paid }).sort({ createdAt: -1 }).lean(),
+    // Gifts made while signed out still carry the member's email.
+    ContributionModel.find({
+      $or: [{ memberId: m._id }, { donorEmail: m.email }],
+      ...paid,
+    })
+      .sort({ createdAt: -1 })
+      .lean(),
+    DuesModel.find({ memberId: m._id, paid: true }).sort({ year: -1 }).lean(),
+  ]);
+
+  // Paystack fulfilment also writes a yearly Dues record carrying the
+  // payment's reference. Only the others were entered by hand.
+  const paystackRefs = new Set(payments.map((p) => p.reference));
+  const manual = dues
+    .filter((d) => !d.reference || !paystackRefs.has(d.reference))
+    .map((d) => ({
+      id: String(d._id),
+      year: d.year,
+      amount: d.amountPaid ?? 0,
+      method: d.method ?? "",
+      reference: d.reference ?? "",
+      notes: d.notes ?? "",
+      paidAt: d.paidAt ?? null,
+    }));
+
+  return {
+    member: memberContact(m),
+    payments: payments.map(paymentView),
+    contributions: contributions.map(contributionView),
+    manual,
+  };
+}
 
 // Auth: current user's own profile
 membersRouter.get("/me", requireAuth, async (req, res, next) => {
@@ -41,13 +90,34 @@ membersRouter.get("/me", requireAuth, async (req, res, next) => {
   }
 });
 
+// Auth: the signed-in member's own payment history, for their dashboard.
+// Registered before /:id/... so "me" isn't read as an id.
+membersRouter.get("/me/transactions", requireAuth, async (req, res, next) => {
+  try {
+    res.json(await loadTransactions(req.user!.sub, true));
+  } catch (err) {
+    next(err);
+  }
+});
+
+function duesYear(raw: unknown): number {
+  const year = Number(raw) || new Date().getFullYear();
+  if (!Number.isInteger(year) || year < 2020 || year > 2100) {
+    throw new HttpError(400, "Invalid year");
+  }
+  return year;
+}
+
 // Admin: list with search & status filter
 membersRouter.get("/", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const status = (req.query.status as string) || undefined;
     const search = (req.query.search as string)?.trim();
     const filter: Record<string, unknown> = {};
-    if (status && ["active", "suspended", "terminated"].includes(status)) {
+    if (
+      status &&
+      ["active", "suspended", "terminated", "pending_payment"].includes(status)
+    ) {
       filter.status = status;
     }
     if (search) {
@@ -86,13 +156,15 @@ membersRouter.get(
   requireAdmin,
   async (_req, res, next) => {
     try {
-      const [active, suspended, terminated, total] = await Promise.all([
-        MemberModel.countDocuments({ status: "active" }),
-        MemberModel.countDocuments({ status: "suspended" }),
-        MemberModel.countDocuments({ status: "terminated" }),
-        MemberModel.countDocuments({}),
-      ]);
-      res.json({ active, suspended, terminated, total });
+      const [active, suspended, terminated, pendingPayment, total] =
+        await Promise.all([
+          MemberModel.countDocuments({ status: "active" }),
+          MemberModel.countDocuments({ status: "suspended" }),
+          MemberModel.countDocuments({ status: "terminated" }),
+          MemberModel.countDocuments({ status: "pending_payment" }),
+          MemberModel.countDocuments({}),
+        ]);
+      res.json({ active, suspended, terminated, pendingPayment, total });
     } catch (err) {
       next(err);
     }
@@ -122,7 +194,8 @@ membersRouter.get(
   }
 );
 
-// Admin: a member's quarterly dues status (paid / waived / due per quarter)
+// Admin: a member's quarterly dues for a year (default this year), with the
+// payment behind each paid quarter so a hand-recorded one can be undone.
 membersRouter.get(
   "/:id/dues",
   requireAuth,
@@ -131,58 +204,25 @@ membersRouter.get(
     try {
       const exists = await MemberModel.exists({ _id: req.params.id });
       if (!exists) throw new HttpError(404, "Member not found");
-      res.json(await memberDuesStatus(req.params.id, new Date().getFullYear()));
+      res.json(
+        await memberDuesStatus(req.params.id, duesYear(req.query.year), {
+          withLedger: true,
+        })
+      );
     } catch (err) {
       next(err);
     }
   }
 );
 
-// Admin: everything a member has paid or given — Paystack payments, voluntary
-// contributions, and payments an admin recorded by hand — for their statement.
+// Admin: a member's full statement, unfinished checkouts included.
 membersRouter.get(
   "/:id/transactions",
   requireAuth,
   requireAdmin,
   async (req, res, next) => {
     try {
-      const m = await MemberModel.findById(req.params.id)
-        .select("fullName email applicantId")
-        .lean();
-      if (!m) throw new HttpError(404, "Member not found");
-
-      const [payments, contributions, dues] = await Promise.all([
-        PaymentModel.find({ memberId: m._id }).sort({ createdAt: -1 }).lean(),
-        // Gifts made while signed out still carry the member's email.
-        ContributionModel.find({
-          $or: [{ memberId: m._id }, { donorEmail: m.email }],
-        })
-          .sort({ createdAt: -1 })
-          .lean(),
-        DuesModel.find({ memberId: m._id, paid: true }).sort({ year: -1 }).lean(),
-      ]);
-
-      // Paystack fulfilment also writes a Dues record carrying the payment's
-      // reference. Only the others were entered by hand (cash, bank, …).
-      const paystackRefs = new Set(payments.map((p) => p.reference));
-      const manual = dues
-        .filter((d) => !d.reference || !paystackRefs.has(d.reference))
-        .map((d) => ({
-          id: String(d._id),
-          year: d.year,
-          amount: d.amountPaid ?? 0,
-          method: d.method ?? "",
-          reference: d.reference ?? "",
-          notes: d.notes ?? "",
-          paidAt: d.paidAt ?? null,
-        }));
-
-      res.json({
-        member: memberContact(m),
-        payments: payments.map(paymentView),
-        contributions: contributions.map(contributionView),
-        manual,
-      });
+      res.json(await loadTransactions(req.params.id, false));
     } catch (err) {
       next(err);
     }
@@ -213,7 +253,9 @@ membersRouter.post(
         if (idx >= 0) member.duesWaivers.splice(idx, 1);
         await member.save();
       }
-      res.json(await memberDuesStatus(req.params.id, new Date().getFullYear()));
+      res.json(
+        await memberDuesStatus(req.params.id, year, { withLedger: true })
+      );
     } catch (err) {
       next(err);
     }
@@ -234,68 +276,13 @@ membersRouter.post(
       const m = await MemberModel.findById(req.params.id);
       if (!m) throw new HttpError(404, "Member not found");
 
-      const now = Date.now();
-
-      // Both emails below carry the member's WPN ID. Every member gets one at
-      // approval, so this only backfills legacy records predating the codes.
-      let applicantId = m.applicantId;
-      if (!applicantId) {
-        applicantId = await nextApplicantId();
-        m.applicantId = applicantId;
-        await m.save();
-      }
-
       if (m.status === "pending_payment") {
-        let token = m.accessToken ?? "";
-        let expires = m.accessTokenExpiresAt ?? null;
-        if (!token || !expires || expires.getTime() < now) {
-          token = crypto.randomBytes(32).toString("hex");
-          expires = new Date(now + TOKEN_TTL_MS);
-          m.accessToken = token;
-          m.accessTokenExpiresAt = expires;
-          await m.save();
-        }
-        const settings = await getOrCreateSettings();
-        const tpl = approvalEmail({
-          fullName: m.fullName,
-          applicantId,
-          paymentUrl: `${config.publicBaseUrl}/membership/payment/${token}`,
-          amount: settings.membershipFee.amount,
-          currency: settings.membershipFee.currency,
-          expiresAt: expires,
-        });
-        await sendEmail({
-          to: m.email,
-          subject: tpl.subject,
-          html: tpl.html,
-          text: tpl.text,
-        });
+        await sendPaymentLink(m);
         return res.json({ ok: true, kind: "payment", email: m.email });
       }
 
       if (m.status === "active" && !m.passwordHash) {
-        let token = m.setPasswordToken ?? "";
-        let expires = m.tokenExpiresAt ?? null;
-        if (!token || !expires || expires.getTime() < now) {
-          token = crypto.randomBytes(32).toString("hex");
-          expires = new Date(now + TOKEN_TTL_MS);
-          m.setPasswordToken = token;
-          m.tokenExpiresAt = expires;
-          await m.save();
-        }
-        const tpl = welcomeEmail({
-          fullName: m.fullName,
-          email: m.email,
-          applicantId,
-          setPasswordUrl: `${config.publicBaseUrl}/set-password/${token}`,
-          expiresAt: expires,
-        });
-        await sendEmail({
-          to: m.email,
-          subject: tpl.subject,
-          html: tpl.html,
-          text: tpl.text,
-        });
+        await sendSetPasswordLink(m);
         return res.json({ ok: true, kind: "set_password", email: m.email });
       }
 
@@ -303,6 +290,38 @@ membersRouter.post(
         400,
         "This member has already set their password — there's no onboarding email to resend."
       );
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Admin: re-send the payment link to everyone who was approved but never paid.
+// Each person gets their existing link if it's still valid, or a fresh one.
+// One failed email doesn't stop the rest; failures are reported back.
+membersRouter.post(
+  "/resend-payment-links",
+  requireAuth,
+  requireAdmin,
+  bulkResendLimiter,
+  async (_req, res, next) => {
+    try {
+      const waiting = await MemberModel.find({
+        status: "pending_payment",
+        role: "member",
+      });
+      let sent = 0;
+      const failed: string[] = [];
+      for (const m of waiting) {
+        try {
+          await sendPaymentLink(m);
+          sent += 1;
+        } catch (err) {
+          console.error("[bulk-payment-link] failed", m.email, err);
+          failed.push(m.email);
+        }
+      }
+      res.json({ total: waiting.length, sent, failed });
     } catch (err) {
       next(err);
     }

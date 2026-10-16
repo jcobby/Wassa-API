@@ -64,6 +64,10 @@ export const ForgotPasswordInput = z.object({
   email: z.string().trim().toLowerCase().email(),
 });
 
+export const ResumeApplicationInput = z.object({
+  email: z.string().trim().toLowerCase().email(),
+});
+
 export const ContactInput = z.object({
   firstName: trimmed(),
   lastName: z.string().trim().optional().default(""),
@@ -80,8 +84,8 @@ export const ContactReplyInput = z.object({
 
 export const ReviewInput = z.object({
   notes: z.string().trim().optional().default(""),
-  // Only consulted when the decision overturns an earlier approval: whether to
-  // tell the applicant the payment link they were emailed is withdrawn.
+  // Rejections only: whether to email the applicant the outcome (or, when an
+  // approval is overturned, that the payment link they hold is withdrawn).
   notifyApplicant: z.boolean().optional().default(true),
 });
 
@@ -92,13 +96,24 @@ export const ReopenInput = z.object({
   notifyApplicant: z.boolean().optional().default(true),
 });
 
-export const RecordPaymentInput = z.object({
+// One quarter of dues paid outside Paystack, recorded by an admin.
+export const RecordQuarterInput = z.object({
   memberId: z.string().min(1),
   year: z.number().int().min(2020).max(2100),
-  amount: z.number().nonnegative(),
-  method: z.string().trim().optional().default(""),
-  reference: z.string().trim().optional().default(""),
-  notes: z.string().trim().optional().default(""),
+  quarter: z.number().int().min(1).max(4),
+  amount: z.number().positive().max(1_000_000),
+  method: z.string().trim().min(1).max(60).optional().default("Cash"),
+  // The admin's own receipt or transaction number.
+  reference: z.string().trim().max(120).optional().default(""),
+  notes: z.string().trim().max(1000).optional().default(""),
+  // A YYYY-MM-DD from a date field; defaults to now. Can't be in the future.
+  paidAt: z.coerce
+    .date()
+    .refine((d) => d.getTime() <= Date.now() + 24 * 60 * 60 * 1000, {
+      message: "The payment date can't be in the future.",
+    })
+    .optional(),
+  sendReceipt: z.boolean().optional().default(true),
 });
 
 export const UpdateMembershipFeeInput = z.object({

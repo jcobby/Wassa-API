@@ -59,19 +59,22 @@ authRouter.post(
   try {
     const { email, password } = LoginInput.parse(req.body);
     const member = await MemberModel.findOne({ email });
+    // The `code` lets the sign-in page offer to email the missing link again.
     if (!member || !member.passwordHash) {
       // Distinguish "we know you but you haven't paid yet" so the UI can help.
       if (member && member.status === "pending_payment") {
         throw new HttpError(
           403,
-          "Your membership is awaiting payment. Please check your email for the payment link sent when your application was approved."
+          "Your membership is awaiting payment. Use the payment link we emailed when your application was approved.",
+          { code: "pending_payment" }
         );
       }
       // Paid & active, but they haven't chosen a password via the emailed link.
       if (member && !member.passwordHash) {
         throw new HttpError(
           403,
-          "Please set your password first using the link we emailed you after payment, then sign in."
+          "Please set your password first using the link we emailed you after payment, then sign in.",
+          { code: "password_not_set" }
         );
       }
       throw new HttpError(401, "Invalid email or password");
@@ -79,7 +82,8 @@ authRouter.post(
     if (member.status === "pending_payment") {
       throw new HttpError(
         403,
-        "Your membership is awaiting payment. Please check your email for the payment link."
+        "Your membership is awaiting payment. Use the payment link we emailed when your application was approved.",
+        { code: "pending_payment" }
       );
     }
     if (member.status !== "active") {

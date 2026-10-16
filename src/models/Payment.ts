@@ -32,6 +32,20 @@ const PaymentSchema = new Schema(
     batchReference: { type: String, default: null, index: true },
     paystackData: { type: Schema.Types.Mixed, default: null },
     completedAt: { type: Date, default: null },
+
+    // Set only on dues an admin recorded by hand (cash, bank transfer, …)
+    // rather than taken through Paystack. Such a row counts exactly like a
+    // Paystack payment toward the member's dues.
+    recordedBy: { type: Schema.Types.ObjectId, ref: "Member", default: null },
+    method: { type: String, default: "", trim: true },
+    // The admin's own receipt or transaction number, if any. `reference`
+    // stays system-generated so it is always unique.
+    externalReference: { type: String, default: "", trim: true },
+    notes: { type: String, default: "", trim: true },
+
+    // Dues receipts go out once. Shared by every row of a multi-quarter
+    // checkout, so the member gets one receipt for the whole payment.
+    receiptSentAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

@@ -26,6 +26,9 @@ import { welcomeEmail } from "../email/templates/welcome.js";
 import { fulfillContribution } from "./contributions.routes.js";
 import { isContributionReference } from "../utils/contributionReference.js";
 import { memberContact, paymentView } from "../utils/transactions.js";
+import { maskEmail, sendPaymentLink } from "../utils/onboarding.js";
+import { sendDuesReceipt } from "../utils/duesReceipt.js";
+import { rateLimit } from "../middleware/rateLimit.js";
 import {
   dateRangeClause,
   parseDateRange,
@@ -34,6 +37,12 @@ import {
 import { config } from "../config.js";
 
 export const paymentsRouter = Router();
+
+const renewLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: "Too many requests. Please try again later.",
+});
 
 // Public: validate a payment token and return amount/member info for the landing page
 paymentsRouter.get("/access/:token", async (req, res, next) => {
@@ -73,6 +82,29 @@ paymentsRouter.get("/access/:token", async (req, res, next) => {
     next(err);
   }
 });
+
+// Public: someone opened an expired payment link. Email them a fresh one — to
+// their own address, never shown on screen, so an old link that was forwarded
+// or leaked can't be turned into a working one.
+paymentsRouter.post(
+  "/access/:token/renew",
+  renewLimiter,
+  async (req, res, next) => {
+    try {
+      const member = await MemberModel.findOne({
+        accessToken: req.params.token,
+      });
+      if (!member) throw new HttpError(404, "This link is not valid");
+      if (member.status !== "pending_payment") {
+        throw new HttpError(409, "This membership is already active — you can sign in.");
+      }
+      await sendPaymentLink(member);
+      res.json({ ok: true, email: maskEmail(member.email) });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 // Public: initialize a Paystack transaction
 paymentsRouter.post("/initialize", async (req, res, next) => {
@@ -542,6 +574,13 @@ async function fulfillDuesBatch(reference: string): Promise<FulfillResult> {
     { batchReference: reference, status: { $ne: "success" } },
     { $set: { status: "success", completedAt: new Date(), paystackData: verify } }
   );
+  // One receipt covering every quarter in the checkout. Never fails
+  // fulfilment — the quarters are banked either way.
+  try {
+    await sendDuesReceipt(batch.map((p) => p._id));
+  } catch (err) {
+    console.error("[dues-receipt] failed", reference, err);
+  }
   return { status: "success", memberId, paystack: verify };
 }
 
@@ -602,6 +641,14 @@ async function fulfillPayment(reference: string): Promise<FulfillResult> {
   payment.completedAt = new Date();
   payment.paystackData = verify;
   await payment.save();
+
+  if (payment.purpose === "dues_renewal") {
+    try {
+      await sendDuesReceipt([payment._id]);
+    } catch (err) {
+      console.error("[dues-receipt] failed", reference, err);
+    }
+  }
 
   // The annual Dues record is only for the initial-membership payment.
   // Quarterly dues are tracked on the Payment record itself (by quarter).

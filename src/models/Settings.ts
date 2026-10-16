@@ -2,10 +2,12 @@ import { Schema, model, type InferSchemaType, type Types } from "mongoose";
 
 // A sub-schema (like NextOfKin) so InferSchemaType treats membershipFee as an
 // always-present object rather than possibly-undefined — callers read
-// `membershipFee.amount` directly without null checks.
+// `membershipFee.amount` directly without null checks. The default is the
+// GH₵100 registration fee the public site has always shown, so a fresh
+// database charges what applicants were told.
 const MembershipFeeSchema = new Schema(
   {
-    amount: { type: Number, required: true, default: 200 },
+    amount: { type: Number, required: true, default: 100 },
     currency: { type: String, required: true, default: "GHS" },
   },
   { _id: false }

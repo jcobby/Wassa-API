@@ -23,6 +23,26 @@ settingsRouter.get("/membership-fee", async (_req, res, next) => {
   }
 });
 
+// Public: both amounts the site quotes — the one-time registration fee and the
+// quarterly dues — so public pages always show what is actually charged.
+settingsRouter.get("/fees", async (_req, res, next) => {
+  try {
+    const s = await getOrCreateSettings();
+    res.json({
+      registration: {
+        amount: s.membershipFee.amount,
+        currency: s.membershipFee.currency,
+      },
+      quarterlyDues: {
+        amount: s.quarterlyDues.amount,
+        currency: s.quarterlyDues.currency,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Admin: full settings doc
 settingsRouter.get("/", requireAuth, requireAdmin, async (_req, res, next) => {
   try {

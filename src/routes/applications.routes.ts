@@ -7,6 +7,7 @@ import { PaymentModel } from "../models/Payment.js";
 import {
   ApplicationInput,
   ReopenInput,
+  ResumeApplicationInput,
   ReviewInput,
   VerifyEmailInput,
 } from "../utils/validation.js";
@@ -17,27 +18,54 @@ import { getOrCreateSettings } from "../models/Settings.js";
 import { sendEmail } from "../email/client.js";
 import { approvalEmail } from "../email/templates/approval.js";
 import { approvalWithdrawnEmail } from "../email/templates/approvalWithdrawn.js";
+import { rejectionEmail } from "../email/templates/rejection.js";
 import { verifyEmailTemplate } from "../email/templates/verifyEmail.js";
-import { rateLimit } from "../middleware/rateLimit.js";
+import { emailKey, rateLimit } from "../middleware/rateLimit.js";
 import { nextApplicantId } from "../utils/applicantId.js";
+import {
+  resumeOnboarding,
+  sendConfirmationLink,
+  UNCONFIRMED_TTL_MS,
+} from "../utils/onboarding.js";
 import { verifyTransaction } from "../payments/paystack.js";
 import { config } from "../config.js";
 
 export const applicationsRouter = Router();
 
-// Submitting sends a confirmation email and writes a record — cap per network.
+// Submitting sends a confirmation email and writes a record. Many phones on a
+// Ghanaian mobile network share one public address, so the per-network cap is
+// generous — a busy hour after an announcement mustn't lock real applicants
+// out at the last step. The strict cap is per email address, which is what
+// protects an inbox from being flooded.
 const submitLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 10,
+  max: 60,
   message:
-    "Too many applications submitted from this network. Please try again later.",
+    "A lot of applications have come from your network in the last hour. Please try again a little later.",
+});
+const submitEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  keyGenerator: emailKey,
+  message:
+    "You've submitted several times with this email in the last hour. Check your inbox (and spam) for the confirmation link, or try again later.",
 });
 const verifyLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30 });
 const adminResendLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 });
-
-// Never-confirmed applications are auto-deleted this long after they're created
-// (or after a confirmation link is re-sent). Cleared the instant they confirm.
-const UNCONFIRMED_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+// "Continue your application" sends an email, so keep it tight — per network,
+// and strictly per address so nobody's inbox can be flooded.
+const resumeIpLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: "Too many requests. Please try again later.",
+});
+const resumeEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  keyGenerator: emailKey,
+  message:
+    "We've already sent a few emails to this address. Please check your inbox, including spam, or try again later.",
+});
 
 const CORRECTION_REASON_REQUIRED =
   "Give a reason for changing the decision — it's kept on the record.";
@@ -155,14 +183,21 @@ async function revokeApproval(app: AppDoc): Promise<void> {
   await member.deleteOne();
 }
 
-// Tell an applicant their approval was withdrawn. Never fails the request —
-// the decision is already saved; the admin is told if the email didn't go.
-async function notifyWithdrawal(
+// Tell an applicant the outcome: a plain rejection, or that an approval they
+// were already emailed is withdrawn. Never fails the request — the decision is
+// already saved; the admin is told if the email didn't go.
+async function notifyApplicant(
   app: AppDoc,
-  outcome: "rejected" | "under_review"
+  outcome: "rejected" | "approval_withdrawn" | "back_under_review"
 ): Promise<{ sent: boolean; error?: string }> {
   try {
-    const tpl = approvalWithdrawnEmail({ fullName: app.fullName, outcome });
+    const tpl =
+      outcome === "rejected"
+        ? rejectionEmail({ fullName: app.fullName })
+        : approvalWithdrawnEmail({
+            fullName: app.fullName,
+            outcome: outcome === "approval_withdrawn" ? "rejected" : "under_review",
+          });
     await sendEmail({
       to: app.email,
       subject: tpl.subject,
@@ -171,7 +206,7 @@ async function notifyWithdrawal(
     });
     return { sent: true };
   } catch (err) {
-    console.error("[approval-withdrawn-email] failed", err);
+    console.error(`[${outcome}-email] failed`, err);
     return {
       sent: false,
       error: err instanceof Error ? err.message : String(err),
@@ -180,7 +215,7 @@ async function notifyWithdrawal(
 }
 
 // Public: submit a new application
-applicationsRouter.post("/", submitLimiter, async (req, res, next) => {
+applicationsRouter.post("/", submitLimiter, submitEmailLimiter, async (req, res, next) => {
   try {
     const input = ApplicationInput.parse(req.body);
 
@@ -203,7 +238,7 @@ applicationsRouter.post("/", submitLimiter, async (req, res, next) => {
     if (priorApps.some((a) => a.status === "approved")) {
       throw new HttpError(
         409,
-        "An application with this email has already been approved. Check your inbox for your payment/login link, or contact us for help."
+        "An application with this email has already been approved. To get your payment link again, use “Continue your application” under Membership."
       );
     }
     if (priorApps.some((a) => a.status === "pending" && a.emailVerified)) {
@@ -315,29 +350,32 @@ applicationsRouter.post(
         );
       }
 
-      const verifyToken = crypto.randomBytes(32).toString("hex");
-      const verifyTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-      app.verifyToken = verifyToken;
-      app.verifyTokenExpiresAt = verifyTokenExpiresAt;
-      // A fresh link supersedes any old one; require them to confirm again and
-      // restart the auto-cleanup clock so a resent-but-ignored app still purges.
-      app.emailVerified = false;
-      app.cleanupAt = new Date(Date.now() + UNCONFIRMED_TTL_MS);
-      await app.save();
-
-      const tpl = verifyEmailTemplate({
-        fullName: app.fullName,
-        verifyUrl: `${config.publicBaseUrl}/membership/verify/${verifyToken}`,
-        expiresAt: verifyTokenExpiresAt,
-      });
-      await sendEmail({
-        to: app.email,
-        subject: tpl.subject,
-        html: tpl.html,
-        text: tpl.text,
-      });
-
+      await sendConfirmationLink(app);
       res.json({ ok: true, email: app.email });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Public: pick up an application where the applicant left off. Emails the link
+// for whichever step they're stuck on — confirming their email, paying the
+// registration fee, or setting a password. Always answers the same way, so it
+// can't be used to find out who has applied.
+applicationsRouter.post(
+  "/resume",
+  resumeIpLimiter,
+  resumeEmailLimiter,
+  async (req, res, next) => {
+    try {
+      const { email } = ResumeApplicationInput.parse(req.body);
+      try {
+        await resumeOnboarding(email);
+      } catch (err) {
+        // Logged, never surfaced — the reply must not depend on the account.
+        console.error("[resume] failed", err);
+      }
+      res.json({ ok: true });
     } catch (err) {
       next(err);
     }
@@ -566,7 +604,9 @@ applicationsRouter.patch(
   requireAdmin,
   async (req, res, next) => {
     try {
-      const { notes, notifyApplicant } = ReviewInput.parse(req.body ?? {});
+      const { notes, notifyApplicant: notify } = ReviewInput.parse(
+        req.body ?? {}
+      );
       const app = await ApplicationModel.findById(req.params.id);
       if (!app) throw new HttpError(404, "Application not found");
       if (app.status === "rejected") {
@@ -597,10 +637,11 @@ applicationsRouter.patch(
       });
       await app.save();
 
-      const notice =
-        correcting && notifyApplicant
-          ? await notifyWithdrawal(app, "rejected")
-          : null;
+      // A first-time rejection gets the rejection email; overturning an
+      // approval gets the "approval withdrawn, don't pay" correction instead.
+      const notice = notify
+        ? await notifyApplicant(app, correcting ? "approval_withdrawn" : "rejected")
+        : null;
       res.json({
         id: String(app._id),
         status: app.status,
@@ -622,7 +663,9 @@ applicationsRouter.patch(
   requireAdmin,
   async (req, res, next) => {
     try {
-      const { notes, notifyApplicant } = ReopenInput.parse(req.body ?? {});
+      const { notes, notifyApplicant: notify } = ReopenInput.parse(
+        req.body ?? {}
+      );
       const app = await ApplicationModel.findById(req.params.id);
       if (!app) throw new HttpError(404, "Application not found");
       if (app.status === "pending") {
@@ -649,8 +692,8 @@ applicationsRouter.patch(
       await app.save();
 
       const notice =
-        wasApproved && notifyApplicant
-          ? await notifyWithdrawal(app, "under_review")
+        wasApproved && notify
+          ? await notifyApplicant(app, "back_under_review")
           : null;
       res.json({
         id: String(app._id),
