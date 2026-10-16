@@ -26,6 +26,11 @@ import { welcomeEmail } from "../email/templates/welcome.js";
 import { fulfillContribution } from "./contributions.routes.js";
 import { isContributionReference } from "../utils/contributionReference.js";
 import { memberContact, paymentView } from "../utils/transactions.js";
+import {
+  dateRangeClause,
+  parseDateRange,
+  RANGE_LIMIT,
+} from "../utils/dateRange.js";
 import { config } from "../config.js";
 
 export const paymentsRouter = Router();
@@ -355,12 +360,14 @@ export const paystackWebhook: RequestHandler = async (req, res) => {
 };
 
 // Admin: list payments, optionally searched by member name / email / WPN ID or
-// by transaction reference.
+// by transaction reference, and narrowed to a date range (?from=&to=).
 paymentsRouter.get("/", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const status = (req.query.status as string) || undefined;
     const search = (req.query.search as string)?.trim();
+    const range = parseDateRange(req.query);
     const filter: Record<string, unknown> = {};
+    const clauses: Record<string, unknown>[] = [];
     if (
       status &&
       ["initialized", "success", "failed", "abandoned"].includes(status)
@@ -372,15 +379,21 @@ paymentsRouter.get("/", requireAuth, requireAdmin, async (req, res, next) => {
       const memberIds = await MemberModel.find({
         $or: [{ fullName: rx }, { email: rx }, { applicantId: rx }],
       }).distinct("_id");
-      filter.$or = [
-        { reference: rx },
-        { batchReference: rx },
-        { memberId: { $in: memberIds } },
-      ];
+      clauses.push({
+        $or: [
+          { reference: rx },
+          { batchReference: rx },
+          { memberId: { $in: memberIds } },
+        ],
+      });
     }
+    const dated = dateRangeClause(range);
+    if (dated) clauses.push(dated);
+    if (clauses.length) filter.$and = clauses;
+
     const list = await PaymentModel.find(filter)
       .sort({ createdAt: -1 })
-      .limit(200)
+      .limit(dated ? RANGE_LIMIT : 200)
       .populate<{
         memberId: {
           _id: unknown;
@@ -441,13 +454,8 @@ paymentsRouter.get("/:id", requireAuth, requireAdmin, async (req, res, next) => 
           fullName: string;
           email: string;
           applicantId?: string | null;
-          mobileNumbers?: string;
-          countryOfResidence?: string;
         };
-      }>(
-        "memberId",
-        "fullName email applicantId mobileNumbers countryOfResidence"
-      )
+      }>("memberId", "fullName email applicantId")
       .lean();
     if (!p) throw new HttpError(404, "Payment not found");
 

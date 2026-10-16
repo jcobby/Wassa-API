@@ -147,7 +147,7 @@ membersRouter.get(
   async (req, res, next) => {
     try {
       const m = await MemberModel.findById(req.params.id)
-        .select("fullName email applicantId mobileNumbers countryOfResidence")
+        .select("fullName email applicantId")
         .lean();
       if (!m) throw new HttpError(404, "Member not found");
 

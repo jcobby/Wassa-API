@@ -82,19 +82,14 @@ type RawMember = {
   fullName: string;
   email: string;
   applicantId?: string | null;
-  mobileNumbers?: string | null;
-  countryOfResidence?: string | null;
 };
 
-// Who a receipt is for — with the phone number, so the console can open a
-// WhatsApp chat with them directly.
+// Who a receipt or statement is for.
 export function memberContact(m: RawMember) {
   return {
     id: String(m._id),
     fullName: m.fullName,
     email: m.email,
     applicantId: m.applicantId ?? null,
-    mobileNumbers: m.mobileNumbers ?? "",
-    countryOfResidence: m.countryOfResidence ?? "",
   };
 }

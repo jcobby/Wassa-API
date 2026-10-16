@@ -18,6 +18,11 @@ import { nextContributionReference } from "../utils/contributionReference.js";
 import { sendEmail } from "../email/client.js";
 import { contributionReceiptEmail } from "../email/templates/contributionReceipt.js";
 import { contributionView, memberContact } from "../utils/transactions.js";
+import {
+  dateRangeClause,
+  parseDateRange,
+  RANGE_LIMIT,
+} from "../utils/dateRange.js";
 import { config } from "../config.js";
 
 export const contributionsRouter = Router();
@@ -148,12 +153,15 @@ contributionsRouter.get("/verify/:reference", async (req, res, next) => {
   }
 });
 
-// Admin: ledger of contributions, optionally searched by donor or reference.
+// Admin: ledger of contributions, optionally searched by donor or reference
+// and narrowed to a date range (?from=&to=).
 contributionsRouter.get("/", requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const status = (req.query.status as string) || undefined;
     const search = (req.query.search as string)?.trim();
+    const range = parseDateRange(req.query);
     const filter: Record<string, unknown> = {};
+    const clauses: Record<string, unknown>[] = [];
     if (
       status &&
       ["initialized", "success", "failed", "abandoned"].includes(status)
@@ -162,11 +170,17 @@ contributionsRouter.get("/", requireAuth, requireAdmin, async (req, res, next) =
     }
     if (search) {
       const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-      filter.$or = [{ donorName: rx }, { donorEmail: rx }, { reference: rx }];
+      clauses.push({
+        $or: [{ donorName: rx }, { donorEmail: rx }, { reference: rx }],
+      });
     }
+    const dated = dateRangeClause(range);
+    if (dated) clauses.push(dated);
+    if (clauses.length) filter.$and = clauses;
+
     const list = await ContributionModel.find(filter)
       .sort({ createdAt: -1 })
-      .limit(200)
+      .limit(dated ? RANGE_LIMIT : 200)
       .lean();
     res.json(list.map(contributionView));
   } catch (err) {
@@ -222,7 +236,7 @@ contributionsRouter.get(
       if (!c) throw new HttpError(404, "Contribution not found");
       const member = c.memberId
         ? await MemberModel.findById(c.memberId)
-            .select("fullName email applicantId mobileNumbers countryOfResidence")
+            .select("fullName email applicantId")
             .lean()
         : null;
       res.json({
