@@ -61,6 +61,14 @@ export function paymentView(p: RawPayment) {
   };
 }
 
+// What a gift is for, in words. "Other" gifts carry the donor's own
+// description in `message`, so show that rather than a bare "Other".
+export function giftDesignation(cause: string, message: string): string {
+  if (cause.trim().toLowerCase() !== "other" || !message.trim()) return cause;
+  const text = message.trim().replace(/\s+/g, " ");
+  return `Other — ${text.length > 200 ? `${text.slice(0, 197)}…` : text}`;
+}
+
 type RawContribution = {
   _id: unknown;
   donorName: string;

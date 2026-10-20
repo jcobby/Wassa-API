@@ -17,7 +17,11 @@ import {
 import { nextContributionReference } from "../utils/contributionReference.js";
 import { sendEmail } from "../email/client.js";
 import { contributionReceiptEmail } from "../email/templates/contributionReceipt.js";
-import { contributionView, memberContact } from "../utils/transactions.js";
+import {
+  contributionView,
+  giftDesignation,
+  memberContact,
+} from "../utils/transactions.js";
 import {
   dateRangeClause,
   parseDateRange,
@@ -96,8 +100,15 @@ contributionsRouter.post("/initialize", giveLimiter, async (req, res, next) => {
       }
     }
 
-    const reference = await nextContributionReference();
     const cause = input.cause || cfg.causes?.[0] || "";
+    // "Other" means the donor names the purpose themselves.
+    if (cause.trim().toLowerCase() === "other" && input.message.trim().length < 3) {
+      throw new HttpError(
+        400,
+        "Please tell us what you'd like your gift to go towards."
+      );
+    }
+    const reference = await nextContributionReference();
     // Paystack appends ?reference=…&trxref=… itself — don't include it here.
     const callbackUrl = `${config.publicBaseUrl}/contribute/success`;
 
@@ -284,7 +295,7 @@ export async function fulfillContribution(
       currency: gift.currency,
       donorName: gift.donorName,
       donorEmail: gift.donorEmail,
-      cause: gift.cause,
+      cause: giftDesignation(gift.cause, gift.message),
       reference: gift.reference,
       alreadyFulfilled: true,
     };
@@ -330,7 +341,7 @@ export async function fulfillContribution(
         donorName: gift.donorName,
         amount: gift.amount,
         currency: gift.currency,
-        cause: gift.cause,
+        cause: giftDesignation(gift.cause, gift.message),
         reference: gift.reference,
         paidAt,
       });
@@ -353,7 +364,7 @@ export async function fulfillContribution(
     currency: gift.currency,
     donorName: gift.donorName,
     donorEmail: gift.donorEmail,
-    cause: gift.cause,
+    cause: giftDesignation(gift.cause, gift.message),
     reference: gift.reference,
     paystack: verify,
   };
