@@ -10,6 +10,7 @@ import { requireAdmin } from "../middleware/requireAdmin.js";
 import { HttpError } from "../middleware/error.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 import { sendPaymentLink, sendSetPasswordLink } from "../utils/onboarding.js";
+import { sendDuesReminder } from "../utils/duesReminder.js";
 import {
   contributionView,
   memberContact,
@@ -29,6 +30,12 @@ const bulkResendLimiter = rateLimit({
   keyGenerator: () => "bulk-payment-links",
   message:
     "Payment links have already been sent several times this hour. Please wait before sending again.",
+});
+// Dues reminders go one member at a time, so allow enough to work down a list.
+const remindDuesLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  message: "Too many reminders sent in a short time. Please wait a few minutes.",
 });
 
 // Everything a member has paid or given — Paystack payments, dues an admin
@@ -126,7 +133,7 @@ membersRouter.get("/", requireAuth, requireAdmin, async (req, res, next) => {
     }
     const members = await MemberModel.find(filter)
       .select(
-        "applicantId fullName email role status joinedAt occupation countryOfResidence"
+        "applicantId fullName email role status joinedAt occupation countryOfResidence duesReminderSentAt"
       )
       .sort({ joinedAt: -1 })
       .limit(500)
@@ -142,6 +149,7 @@ membersRouter.get("/", requireAuth, requireAdmin, async (req, res, next) => {
         joinedAt: m.joinedAt,
         occupation: m.occupation,
         countryOfResidence: m.countryOfResidence,
+        duesReminderSentAt: m.duesReminderSentAt ?? null,
       }))
     );
   } catch (err) {
@@ -290,6 +298,28 @@ membersRouter.post(
         400,
         "This member has already set their password — there's no onboarding email to resend."
       );
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// Admin: email one active member a reminder of the dues they owe this year,
+// with a link to pay online. Refused if they owe nothing.
+membersRouter.post(
+  "/:id/remind-dues",
+  requireAuth,
+  requireAdmin,
+  remindDuesLimiter,
+  async (req, res, next) => {
+    try {
+      const m = await MemberModel.findById(req.params.id);
+      if (!m) throw new HttpError(404, "Member not found");
+      if (m.role !== "member" || m.status !== "active") {
+        throw new HttpError(400, "Dues reminders can only be sent to active members.");
+      }
+      const out = await sendDuesReminder(m);
+      res.json({ ok: true, email: m.email, ...out });
     } catch (err) {
       next(err);
     }

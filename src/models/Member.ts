@@ -87,6 +87,8 @@ const MemberSchema = new Schema(
 
     // Quarters an admin has waived (member owes no dues for these).
     duesWaivers: { type: [DuesWaiverSchema], default: [] },
+    // When an admin last emailed this member a dues reminder.
+    duesReminderSentAt: { type: Date, default: null },
 
     // Provenance
     applicationId: { type: Schema.Types.ObjectId, ref: "Application" },
